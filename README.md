@@ -33,7 +33,7 @@ claude --plugin-dir /path/to/createos-sandbox-plugin
 | `/createos-sandbox:offload [-s shape] [-r rootfs] [-e egress] [-o out] <dir> <cmd>` | one-shot: stage → run → pull → destroy |
 | `/createos-sandbox:up [-s shape] [-r rootfs] [-n name]` | create/reuse the per-repo project box |
 | `/createos-sandbox:run <cmd>` | exec in the project box (streamed, state persists) |
-| `/createos-sandbox:sync <local-dir> [remote-dir]` | start two-way sync into the project box (background) |
+| `/createos-sandbox:sync [-2\|-M] [-x glob] <local-dir> [remote-dir]` | start file sync into the project box (background); default one-way, `-2` two-way, `-M` mirror, `-x` exclude |
 | `/createos-sandbox:down` | stop sync + destroy the project box |
 | `/createos-sandbox:status` | show active box + sync state |
 
@@ -52,12 +52,12 @@ A `PreToolUse(Bash)` hook (`scripts/offload-hint.sh`) watches for heavy build/te
 ```bash
 scripts/cos offload . 'pip install -r requirements.txt && pytest -q'
 scripts/cos offload -s s-4vcpu-4gb -o dist . 'npm ci && npm run build'
-scripts/cos up -s s-2vcpu-2gb && scripts/cos run 'npm ci' && scripts/cos sync ./app /work
+scripts/cos up -s s-2vcpu-2gb && scripts/cos run 'npm ci' && scripts/cos sync ~/app /work
 scripts/cos down
 ```
 
 ## Safety
 
-- **Two-way sync footgun:** `sync` is a bidirectional Mutagen mirror with no artifact filter — sandbox-side writes flow back into the local dir. Sync a scoped subdir, never a repo root. Prefer `offload` for anything batch.
+- **Sync modes:** `sync` defaults to **one-way** (laptop → box) — box-side writes never touch local. `.git` is skipped by default. `-2` opts into two-way (box writes flow back — use only when you need files back, never on a repo root casually); `-M` mirrors (deletes box-side extras); `-x <glob>` excludes paths. (`--mode`/`-x` need the current `createos` CLI; an old CLI falls back to two-way with a warning.) Prefer `offload -o` to pull artifacts.
 - **Quota:** 100 sandboxes/day, 2 running at once (external keys). Don't spin a fleet without budgeting.
 - **Scope:** `cos` only ever touches boxes it created (`cos-*`) or the project box in its statefile (`~/.cache/createos-sandbox/`). Your other sandboxes are never touched.

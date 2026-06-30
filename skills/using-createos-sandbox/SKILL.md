@@ -48,23 +48,30 @@ For a quick no-files run, the standalone `scratch` wrapper (if installed) is fin
 For repeated runs against a warm box, or a dev-server/watcher Claude edits against. One active box per project (git root), tracked in a statefile.
 
 ```bash
-cos up -s s-2vcpu-2gb          # create/reuse the project box
-cos run 'npm ci'               # warm it (deps persist across runs)
-cos sync . /work               # ⚠ TWO-WAY mirror, background (Mutagen)
-cos run 'npm run dev &'        # start a watcher/server; it sees synced edits
+cos up -s s-2vcpu-2gb              # create/reuse the project box
+cos run 'npm ci'                   # warm it (deps persist across runs)
+cos sync ~/app /work               # DEFAULT one-way (laptop→box); background (Mutagen)
+cos run 'npm run dev &'            # start a watcher/server; it sees synced edits
 # ... Claude edits files locally with normal tools; sync propagates them ...
-cos status                     # show box + sync state
-cos down                       # stop sync + destroy box
+cos status                         # show box + sync state (mode shown)
+cos down                           # stop sync + destroy box
 ```
 
-### ⚠ Two-way sync footgun
+### Sync modes
 
-`cos sync` is a **bidirectional** Mutagen mirror with no artifact filter. Sandbox-side writes (`node_modules`, build output, `.git`) **flow back into the local dir**. Before using it:
+`cos sync` defaults to **one-way (laptop → box)** — the safe direction for a dev loop: your edits propagate in, box-side writes never touch local. Opt into other modes only when needed:
 
-- Sync a **scoped subdir**, not a repo root full of artifacts you don't want mutated.
-- Prefer Pattern A for anything batch — only reach for `sync` when a live process genuinely needs to react to edits.
-- The user's repo is theirs: never start a two-way sync on it without saying so explicitly first.
-- Local dir must be under `$HOME` or literal `/tmp` (CLI guard; `/private/tmp/*` is rejected). First `sync` downloads the Mutagen engine (~60–90 s before edits propagate); later syncs settle in seconds.
+| Flag | Mode | Behavior |
+|---|---|---|
+| *(default)* | `one-way` | laptop wins; box changes NOT pulled back. **No bleed-back.** |
+| `-2` | `two-way` | bidirectional; box-side writes (build output, deps) **flow back** to the local dir |
+| `-M` | `mirror` | one-way **and deletes** box-side files absent locally |
+| `-x <glob>` | — | exclude paths (repeatable): `cos sync -x '*.log' -x node_modules ~/app /work` |
+
+- `.git`/`.hg` are **skipped by default** (the CLI ignores VCS dirs).
+- Only reach for `-2` when a box-side process genuinely produces files you need back locally — and never on the user's repo root without saying so first. Prefer Pattern A (`offload -o`) for pulling artifacts.
+- Local dir must be under `$HOME` or literal `/tmp` (CLI guard; `/private/tmp/*` is rejected). First `sync` downloads Mutagen (~60–90 s before edits propagate); later syncs settle in seconds.
+- Needs the new `createos` CLI for `--mode`/`-x`; on an old CLI `cos sync` warns and falls back to two-way.
 
 ## Lifecycle & cost
 

@@ -101,19 +101,37 @@ cmd_run(){
 
 cmd_sync(){
   local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
+  local mode=one-way; local -a excl=()       # default ONE-WAY: laptop→box, no bleed-back
+  while getopts "2Mx:" o; do case $o in
+    2) mode=two-way;; M) mode=mirror;; x) excl+=(--exclude "$OPTARG");;
+    *) die "usage: cos sync [-2|-M] [-x glob]... <local-dir> [remote-dir]";; esac; done
+  shift $((OPTIND-1))
   local dir=${1:?local-dir required}; local remote=${2:-/work}
   [ -d "$dir" ] || die "no such dir: $dir"
   # createos CLI requires the local path under $HOME or literal /tmp (it does NOT
   # canonicalize, so /private/tmp/* is rejected — pass the path as given).
   case "$dir" in "$HOME"/*|/tmp/*) :;; *) die "sync local dir must be under \$HOME or /tmp: $dir";; esac
   case "$remote" in /etc*|/usr*|/bin*|/sbin*|/lib*) die "refusing sync to system dir $remote";; esac
-  echo "cos: ⚠ two-way sync — sandbox-side writes (build output, deps) flow BACK to $dir" >&2
-  echo "cos: first run downloads the Mutagen engine (~60-90s before edits propagate)" >&2
-  echo "cos: starting sync $dir ↔ $id:$remote (background)" >&2
+
   # flags must precede the positional <sandbox> (urfave stops flag parsing after it)
-  nohup "$CLI" sandbox sync --local "$dir" --remote "$remote" -y "$id" >"$STATE_DIR/sync-$id.log" 2>&1 &
-  state_set sync_pid "$!" sync_dir "$dir" sync_remote "$remote"
-  echo "cos: sync pid $! (log: $STATE_DIR/sync-$id.log)" >&2
+  local -a args=(sandbox sync --local "$dir" --remote "$remote" -y)
+  if "$CLI" sandbox sync --help 2>/dev/null | grep -q -- '--mode'; then
+    args+=(--mode "$mode"); [ "${#excl[@]}" -gt 0 ] && args+=("${excl[@]}")
+  else   # old CLI: only two-way exists, no excludes
+    [ "$mode" != two-way ] && echo "cos: ⚠ installed createos CLI lacks --mode; falling back to TWO-WAY (box writes bleed back). Upgrade the CLI for one-way/mirror." >&2
+    [ "${#excl[@]}" -gt 0 ] && echo "cos: ⚠ installed CLI lacks --exclude; ignoring -x globs." >&2
+    mode=two-way
+  fi
+
+  case "$mode" in
+    one-way) echo "cos: one-way sync $dir → $id:$remote (laptop wins; box changes NOT pulled back)" >&2;;
+    two-way) echo "cos: ⚠ two-way sync — sandbox-side writes (build output, deps) flow BACK to $dir" >&2;;
+    mirror)  echo "cos: ⚠ mirror — files on the box not present in $dir will be DELETED" >&2;;
+  esac
+  echo "cos: first run downloads Mutagen (~60-90s before edits propagate); .git skipped by default" >&2
+  nohup "$CLI" "${args[@]}" >"$STATE_DIR/sync-$id.log" 2>&1 &
+  state_set sync_pid "$!" sync_dir "$dir" sync_remote "$remote" sync_mode "$mode"
+  echo "cos: sync pid $! ($mode, log: $STATE_DIR/sync-$id.log)" >&2
 }
 
 cmd_down(){
@@ -128,7 +146,7 @@ cmd_status(){
   local id; id=$(state_get id)
   echo "active: $id ($(state_get name))  shape=$(state_get shape)"
   local pid; pid=$(state_get sync_pid)
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "sync:   pid $pid  $(state_get sync_dir) ↔ $(state_get sync_remote)" || echo "sync:   none"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "sync:   pid $pid  [$(state_get sync_mode)] $(state_get sync_dir) → $(state_get sync_remote)" || echo "sync:   none"
   "$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg i "$id" '.[]|select(.id==$i)|"status: \(.status)  ip=\(.ip)"' || true
 }
 
@@ -145,7 +163,7 @@ cos — CreateOS sandbox as remote compute.
   cos offload [-s shape] [-r rootfs] [-e egress]... <dir> <cmd> [-o out]   one-shot: stage→run→pull→destroy
   cos up   [-s shape] [-r rootfs] [-n name]                                create/reuse project box
   cos run  <cmd>                                                           exec in project box (streamed)
-  cos sync <dir> [remote]                                                  two-way sync into project box (bg)
+  cos sync [-2|-M] [-x glob]... <dir> [remote]                             sync into project box (bg); default one-way (laptop→box), -2 two-way, -M mirror
   cos down                                                                 stop sync + destroy box
   cos status                                                               show active box + sync
 EOF

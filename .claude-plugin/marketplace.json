@@ -6,7 +6,7 @@
     {
       "name": "createos-sandbox",
       "source": ".",
-      "description": "Run ad-hoc/heavy/untrusted code in disposable CreateOS microVMs; one-shot offload + reusable box with two-way sync."
+      "description": "Run ad-hoc/heavy/untrusted code in disposable CreateOS microVMs; one-shot offload + reusable box with one-way/two-way/mirror sync."
     }
   ]
 }
