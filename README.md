@@ -43,6 +43,10 @@ Flags (`-s/-r/-e/-o`) come **before** the positionals.
 
 `using-createos-sandbox` teaches Claude *when* to offload (untrusted code, heavy builds/tests, parallel/matrix work, clean-room repros, live dev loops) so it reaches for the sandbox on its own. It drives the same `scripts/cos` helper.
 
+## Auto-suggest hook
+
+A `PreToolUse(Bash)` hook (`scripts/offload-hint.sh`) watches for heavy build/test commands (`npm ci`, `make`, `pytest`, `go test`, `cargo build`, `pip install`, …) and adds a one-line nudge to consider `/createos-sandbox:offload`. It is **non-blocking** — the command still runs — and skips sandbox/git/docker commands. Silence it with `COS_NO_HINT=1`.
+
 ## Direct CLI (no Claude)
 
 ```bash
