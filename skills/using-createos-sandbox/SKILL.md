@@ -7,14 +7,14 @@ description: Use when you need to run code OFF the user's machine — heavy/long
 
 A CreateOS sandbox is a fast (~25 ms spawn) Firecracker microVM. Use it as throwaway Linux compute instead of running risky or heavy work on the user's laptop.
 
-Driver: `${CLAUDE_PLUGIN_ROOT}/scripts/cos` (wraps the authed `createos` CLI). `jq` required.
+Driver: `cos`. It is **not on PATH** by default — run `${CLAUDE_PLUGIN_ROOT}/scripts/cos install` once (symlinks to `~/.local/bin/cos`), then use bare `cos`; otherwise call it by that full path. Wraps the authed `createos` CLI; needs `jq`, `tar`, `perl`.
 
 ## When to reach for it
 
 | Situation | Why offload |
 |---|---|
 | **Untrusted / unknown code** — a snippet, a fresh npm/pip package, scraped code, a PoC exploit | Isolation. Escape blast-radius is one disposable VM, not the laptop. |
-| **Heavy build or test suite** — big `make`, full test run, compile, benchmark | Keeps the laptop free; runs on a sized box (`-s s-4vcpu-4gb`). |
+| **Heavy build or test suite** — big `make`, full test run, compile, benchmark | Keeps the laptop free; runs on a sized box (shapes are plan-gated — see Limits). |
 | **Parallel/matrix work** — same job across N configs | Spin N boxes concurrently, each isolated. |
 | **Clean-room repro** — "works on my machine" bugs, dependency conflicts | Fresh `devbox:1` rootfs every time, no host state. |
 | **Live dev loop** — dev server / test watcher / REPL that reacts to edits | Opt-in reusable box + two-way `sync`; Claude edits locally, the box reacts. |
@@ -23,25 +23,35 @@ Do NOT offload trivial commands, anything needing the user's local secrets/SSH/c
 
 ## Pattern A — one-shot offload (default, safe)
 
-Stage a directory, run, optionally pull artifacts back, **always auto-destroys**:
+Stage a directory, run, optionally pull artifacts back, **always auto-destroys**. Flags come **before** the `<dir> <cmd>` positionals.
 
 ```bash
-# run a test suite off-machine
-cos offload . 'pip install -r requirements.txt && pytest -q'
+# run a test suite off-machine (egress preset opens the registries it needs)
+cos offload -p python-uv . 'uv sync --frozen --group dev && uv run pytest -q'
 
-# bigger box for a heavy build, pull the build output back into ./dist
-# NOTE: flags (-s/-r/-e/-o) come BEFORE the <dir> <cmd> positionals
-cos offload -s s-4vcpu-4gb -o dist . 'npm ci && npm run build'
+# Python+Rust (uv+maturin/pyo3): compose presets, exclude build dirs, pull artifacts
+cos offload -p python-uv -p rust-cargo -x target -o dist . 'uv sync --frozen && uv run pytest -q'
 
-# run an UNTRUSTED script with egress locked to nothing but what it needs
+# trusted heavy build, unrestricted egress + swap headroom
+cos offload -E -w 4 . 'cargo build --release'
+
+# untrusted script, egress locked to exactly what it needs
 cos offload -e pypi.org -e files.pythonhosted.org ./suspect 'python3 main.py'
 ```
 
-- One-way: local tree → box `/work`. Box-side changes do NOT touch local unless you pass `-o <path>` (tarred from `/work/<path>` back into the staged dir).
-- Streams stdout/stderr live; exit code is preserved.
-- Box is destroyed on success, failure, or interrupt.
+Flags: `-p <preset>` (egress preset, repeatable) · `-e <domain>` (one domain) · `-E` (unrestricted) · `-x <glob>` (extra upload exclude) · `-o <path>` (tar dir to pull back) · `-w <GB>` (swap) · `-K` (keep box on failure) · `-s/-r` (shape/rootfs).
 
-For a quick no-files run, the standalone `scratch` wrapper (if installed) is fine; `cos offload <dir> <cmd>` is the with-files version.
+- **One-way**: local tree → box `/work`. Box-side changes don't touch local unless you pass `-o <path>`. `.git`, `target`, `node_modules`, `__pycache__`, `.venv`, media are excluded from the upload by default.
+- **Survives long/quiet builds**: the command runs detached in-box with a 10 s heartbeat; if the exec stream drops mid-build it re-attaches (the build keeps running, cache intact) instead of dying. Exit code is preserved.
+- **Egress presets**: `python-uv` (astral.sh, pypi, pythonhosted), `rust-cargo` (crates.io ×3, rust-lang, **cdn.pyke.io** — ort-sys/ONNX), `npm`, `github`. Compose with `-e`. A locked-down build that fails on a missing host needs that host added.
+- Box is destroyed on success, failure, or interrupt — **unless** `-K` (keep on failure) or an infra/stream error, which keep it so the cache survives (`cos` prints the reconnect + destroy commands).
+
+### Limits & heavy-build gotchas
+
+- **Shapes are plan-gated.** External plans may cap small (e.g. `s-1vcpu-1gb` max). Picking a too-big `-s` fails fast with a clean `not allowed … Allowed: [...]` line — pick from that list. Discover allowed shapes with `createos sandbox shapes`.
+- **Swap is best-effort.** `-w <GB>` tries to add a swapfile, but `devbox:1` currently can't `swapon` (stays 0 MB) — it warns and continues. On a capped plan there's no bigger box to fall back to, so a compiled-extension build (pyo3/maturin/torch) can OOM. Split the work: build the extension separately, or install only the extra/group you need.
+- **Disk fills fast.** `pip install`/`uv sync` with `--all-extras` can pull CUDA/torch wheels (GBs) and hit `No space left on device` on a small box. Install only the needed extra/group; bump `--disk-mib` via the CLI if you control the plan.
+- **`cdn.pyke.io`** is the non-obvious one: `ort-sys` (ONNX Runtime, pulled by many ML crates) downloads prebuilt binaries from it. It's already in the `rust-cargo` preset.
 
 ## Pattern B — reusable box + live session (opt-in)
 

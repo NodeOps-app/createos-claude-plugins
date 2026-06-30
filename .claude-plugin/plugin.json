@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "createos-sandbox",
   "displayName": "CreateOS Sandbox",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Run ad-hoc, heavy, or untrusted code OFF your machine in disposable CreateOS Firecracker microVMs. One-shot offload (stage files → exec → pull artifacts → auto-destroy) plus an opt-in reusable box with one-way/two-way/mirror file sync for live dev loops.",
   "author": { "name": "NodeOps", "url": "https://createos.sh" },
   "homepage": "https://createos.sh",

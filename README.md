@@ -10,19 +10,21 @@ Two patterns:
 ## Requirements
 
 - `createos` CLI on `PATH`, authenticated (`createos sandbox ls` works).
-- `jq`, `tar`, `bash`.
+- `jq`, `tar`, `perl`, `bash`.
+
+`cos` itself is **not on PATH** by default — run `scripts/cos install` once (symlinks to `~/.local/bin/cos`) and use bare `cos`, or invoke it by full path (`${CLAUDE_PLUGIN_ROOT}/scripts/cos`).
 
 ## Install
 
 **Dev (instant, no install):**
 ```bash
-claude --plugin-dir /path/to/createos-sandbox-plugin
+claude --plugin-dir /path/to/createos-plugin
 /reload-plugins      # after editing plugin files
 ```
 
 **Persistent (local marketplace):**
 ```
-/plugin marketplace add /path/to/createos-sandbox-plugin
+/plugin marketplace add /path/to/createos-plugin
 /plugin install createos-sandbox@createos
 ```
 
@@ -30,7 +32,7 @@ claude --plugin-dir /path/to/createos-sandbox-plugin
 
 | Command | What |
 |---|---|
-| `/createos-sandbox:offload [-s shape] [-r rootfs] [-e egress] [-o out] <dir> <cmd>` | one-shot: stage → run → pull → destroy |
+| `/createos-sandbox:offload [-p preset] [-e dom] [-E] [-x glob] [-o out] [-w GB] [-K] [-s shape] <dir> <cmd>` | one-shot: stage → run (keepalive) → pull → destroy |
 | `/createos-sandbox:up [-s shape] [-r rootfs] [-n name]` | create/reuse the per-repo project box |
 | `/createos-sandbox:run <cmd>` | exec in the project box (streamed, state persists) |
 | `/createos-sandbox:sync [-2\|-M] [-x glob] <local-dir> [remote-dir]` | start file sync into the project box (background); default one-way, `-2` two-way, `-M` mirror, `-x` exclude |
@@ -50,11 +52,19 @@ A `PreToolUse(Bash)` hook (`scripts/offload-hint.sh`) watches for heavy build/te
 ## Direct CLI (no Claude)
 
 ```bash
-scripts/cos offload . 'pip install -r requirements.txt && pytest -q'
-scripts/cos offload -s s-4vcpu-4gb -o dist . 'npm ci && npm run build'
-scripts/cos up -s s-2vcpu-2gb && scripts/cos run 'npm ci' && scripts/cos sync ~/app /work
-scripts/cos down
+cos install                                   # symlink onto PATH (once)
+cos offload -p python-uv . 'uv sync --frozen --group dev && uv run pytest -q'
+cos offload -p python-uv -p rust-cargo -x target -o dist . 'uv sync --frozen && uv run pytest -q'
+cos up && cos run 'npm ci' && cos sync ~/app /work    # reusable box + one-way sync
+cos down
 ```
+
+### Heavy builds (Python/Rust/compiled)
+
+- **Egress presets** open the registries a build reaches: `-p python-uv` (astral.sh, pypi, pythonhosted), `-p rust-cargo` (crates.io ×3, rust-lang, **cdn.pyke.io** ← ort-sys/ONNX), `-p npm`, `-p github`. Compose them, add stragglers with `-e <host>`, or `-E` for unrestricted.
+- **Keepalive**: long/quiet compiles no longer get killed by exec-stream idle resets — the command runs detached with a heartbeat and re-attaches if the stream drops; the build (and its cache) survives. `-K` keeps the box on a real failure so you can inspect.
+- **Excludes**: `.git`/`target`/`node_modules`/`__pycache__`/`.venv`/media are excluded from the upload by default; `-x <glob>` adds more.
+- **Shapes are plan-gated** — a too-big `-s` fails with a clean `Allowed: [...]` list (`createos sandbox shapes` to discover). `-w <GB>` *attempts* swap but `devbox:1` can't `swapon` today, so on a capped plan a torch/maturin build may OOM/ENOSPC — install only the extra/group you need rather than `--all-extras`.
 
 ## Safety
 
