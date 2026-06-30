@@ -1,0 +1,59 @@
+# createos-sandbox — Claude Code plugin
+
+Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateOS](https://createos.nodeops.network) Firecracker microVMs (~25 ms spawn). Gives Claude a skill + slash commands that drive the authed `createos` CLI.
+
+Two patterns:
+
+- **One-shot offload** (default, safe): stage a dir → exec → optionally pull artifacts → **auto-destroy**. One-way; box-side changes never touch local unless you ask.
+- **Live session** (opt-in): a reusable per-repo box + two-way file sync, so a dev-server/watcher inside the box reacts to your local edits.
+
+## Requirements
+
+- `createos` CLI on `PATH`, authenticated (`createos sandbox ls` works).
+- `jq`, `tar`, `bash`.
+
+## Install
+
+**Dev (instant, no install):**
+```bash
+claude --plugin-dir /path/to/createos-sandbox-plugin
+/reload-plugins      # after editing plugin files
+```
+
+**Persistent (local marketplace):**
+```
+/plugin marketplace add /path/to/createos-sandbox-plugin
+/plugin install createos-sandbox@createos
+```
+
+## Slash commands
+
+| Command | What |
+|---|---|
+| `/createos-sandbox:offload [-s shape] [-r rootfs] [-e egress] [-o out] <dir> <cmd>` | one-shot: stage → run → pull → destroy |
+| `/createos-sandbox:up [-s shape] [-r rootfs] [-n name]` | create/reuse the per-repo project box |
+| `/createos-sandbox:run <cmd>` | exec in the project box (streamed, state persists) |
+| `/createos-sandbox:sync <local-dir> [remote-dir]` | start two-way sync into the project box (background) |
+| `/createos-sandbox:down` | stop sync + destroy the project box |
+| `/createos-sandbox:status` | show active box + sync state |
+
+Flags (`-s/-r/-e/-o`) come **before** the positionals.
+
+## Skill
+
+`using-createos-sandbox` teaches Claude *when* to offload (untrusted code, heavy builds/tests, parallel/matrix work, clean-room repros, live dev loops) so it reaches for the sandbox on its own. It drives the same `scripts/cos` helper.
+
+## Direct CLI (no Claude)
+
+```bash
+scripts/cos offload . 'pip install -r requirements.txt && pytest -q'
+scripts/cos offload -s s-4vcpu-4gb -o dist . 'npm ci && npm run build'
+scripts/cos up -s s-2vcpu-2gb && scripts/cos run 'npm ci' && scripts/cos sync ./app /work
+scripts/cos down
+```
+
+## Safety
+
+- **Two-way sync footgun:** `sync` is a bidirectional Mutagen mirror with no artifact filter — sandbox-side writes flow back into the local dir. Sync a scoped subdir, never a repo root. Prefer `offload` for anything batch.
+- **Quota:** 100 sandboxes/day, 2 running at once (external keys). Don't spin a fleet without budgeting.
+- **Scope:** `cos` only ever touches boxes it created (`cos-*`) or the project box in its statefile (`~/.cache/createos-sandbox/`). Your other sandboxes are never touched.
