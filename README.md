@@ -1,6 +1,6 @@
 # createos-sandbox — Claude Code plugin
 
-Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateOS](https://createos.nodeops.network) Firecracker microVMs (~25 ms spawn). Gives Claude a skill + slash commands that drive the authed `createos` CLI.
+Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateOS](https://createos.sh) Firecracker microVMs (~25 ms spawn). Gives Claude a skill + slash commands that drive the authed `createos` CLI.
 
 Two patterns:
 

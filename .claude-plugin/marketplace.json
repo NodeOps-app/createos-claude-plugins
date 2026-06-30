@@ -1,7 +1,7 @@
 {
   "name": "createos",
   "description": "NodeOps CreateOS plugins for Claude Code — disposable sandbox compute and live dev sessions.",
-  "owner": { "name": "NodeOps", "url": "https://createos.nodeops.network" },
+  "owner": { "name": "NodeOps", "url": "https://createos.sh" },
   "plugins": [
     {
       "name": "createos-sandbox",
