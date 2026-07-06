@@ -23,11 +23,15 @@
 set -euo pipefail
 
 CLI=${COS_CLI:-createos}
-CLI_INSTALL_URL=${COS_CLI_INSTALL_URL:-https://raw.githubusercontent.com/NodeOps-app/createos-cli/main/install.sh}
+CLI_INSTALL_URL_DEFAULT=https://raw.githubusercontent.com/NodeOps-app/createos-cli/main/install.sh
+CLI_INSTALL_URL=${COS_CLI_INSTALL_URL:-$CLI_INSTALL_URL_DEFAULT}
 STATE_DIR=${COS_STATE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/createos-sandbox}
 mkdir -p "$STATE_DIR"
 
-proj_key(){ local root; root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); printf '%s' "$root" | shasum | cut -c1-12; }
+proj_key(){ local root; root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  if command -v shasum >/dev/null 2>&1; then printf '%s' "$root" | shasum | cut -c1-12
+  elif command -v sha1sum >/dev/null 2>&1; then printf '%s' "$root" | sha1sum | cut -c1-12
+  else printf '%s' "$root" | sha256sum | cut -c1-12; fi; }
 STATE="$STATE_DIR/$(proj_key).json"
 TUNLIST="${STATE%.json}.tunnels"
 
@@ -78,6 +82,7 @@ create_box(){ # $1=name $2=shape $3=rootfs ; extra --egress in COS_EGRESS array
   local args=(sandbox create --name "$name" --shape "$shape" --rootfs "$rootfs" --auto-pause 30m)
   [ -n "${COS_NET:-}" ] && args+=(--network "${COS_NET}")
   [ "${#COS_EGRESS[@]}" -gt 0 ] && args+=("${COS_EGRESS[@]}")
+  [ "${#COS_EGRESS[@]}" -eq 0 ] && echo "cos: ⚠ egress UNRESTRICTED — box can reach any host (restrict with -p <preset> or -e <domain>)" >&2
   if ! NO_COLOR=1 TERM=dumb "$CLI" "${args[@]}" >"$STATE_DIR/last-create.log" 2>&1; then
     local err; err=$(strip_ansi <"$STATE_DIR/last-create.log" | tr -d '\r' \
       | grep -iE 'not allowed|no space|invalid|denied|quota|exceed|error|fail' | tail -1)
@@ -129,10 +134,10 @@ run_keepalive(){ local id=$1 cmd=$2 wd=${3:-} llog=${4:-$STATE_DIR/last-exec.log
     set +e
     "$CLI" sandbox exec --stream "$id" -- bash -lc "$watch" 2>&1 | tee "$llog"
     set -e
-    rc=$("$CLI" sandbox exec "$id" -- bash -lc 'cat /tmp/.cos-run.rc 2>/dev/null' 2>/dev/null | tr -dc '0-9-' | head -c4)
+    rc=$("$CLI" sandbox exec "$id" -- bash -c 'cat /tmp/.cos-run.rc 2>/dev/null' 2>/dev/null | tr -dc '0-9' | head -c4 || true)
     [ -n "$rc" ] && { BUILD_RC=$rc; return 0; }
     tries=$((tries+1)); [ "$tries" -ge "$max" ] && { INFRA_FAIL=1; return 1; }
-    alive=$("$CLI" sandbox exec "$id" -- bash -lc 'p=$(cat /tmp/.cos-run.pid 2>/dev/null); { [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo ALIVE; } || echo DEAD' 2>/dev/null)
+    alive=$("$CLI" sandbox exec "$id" -- bash -lc 'p=$(cat /tmp/.cos-run.pid 2>/dev/null); { [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo ALIVE; } || echo DEAD' 2>/dev/null || true)
     if printf '%s' "$alive" | grep -q ALIVE; then
       echo "cos: watch stream dropped (attempt $tries/$max) — build still running, re-attaching…" >&2
       sleep 3; continue
@@ -148,7 +153,7 @@ on_offload_exit(){ [ -n "$OFFLOAD_ID" ] || return 0
   "$CLI" sandbox rm -y "$OFFLOAD_ID" >/dev/null 2>&1 && echo "cos: destroyed $OFFLOAD_ID" >&2 || true; }
 
 cmd_offload(){
-  _norm "$@"; set -- "${NORMA[@]}"
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local shape=s-1vcpu-1gb rootfs=devbox:1 out="" swap="" keep_on_fail=0 egress_all=0
   COS_EGRESS=(); local -a excl=(); local OPTIND=1 o doms d
   while getopts "s:r:e:o:p:x:w:EK" o; do case $o in
@@ -165,7 +170,7 @@ cmd_offload(){
   if [ $# -lt 2 ]; then offload_usage; exit 0; fi
   local dir=$1 cmd=$2
   [ -d "$dir" ] || die "no such dir: $dir"
-  [ "$egress_all" = 1 ] && { COS_EGRESS=(); echo "cos: egress UNRESTRICTED (-E)" >&2; }
+  [ "$egress_all" = 1 ] && COS_EGRESS=()
 
   # warn: heavy compiled build on a small box
   local heavy=0 small=0
@@ -182,14 +187,14 @@ cmd_offload(){
 
   # stage with excludes (.git/build artifacts/large media skipped by default)
   local -a tarx=(); local p
-  for p in "${DEFAULT_EXCLUDES[@]}" "${excl[@]}"; do tarx+=(--exclude "$p"); done
+  for p in "${DEFAULT_EXCLUDES[@]}" ${excl[@]+"${excl[@]}"}; do tarx+=(--exclude "$p"); done
   echo "cos: staging $dir → box:/work (default excludes + ${excl[*]:-none})" >&2
   tar "${tarx[@]}" -c -C "$dir" . | "$CLI" sandbox push "$OFFLOAD_ID" - /work.tar >/dev/null 2>&1 || die "push failed"
   "$CLI" sandbox exec "$OFFLOAD_ID" -- bash -lc 'mkdir -p /work && tar -C /work -xf /work.tar && rm -f /work.tar && echo ok' >/dev/null 2>&1 || die "extract failed"
 
   [ -n "$swap" ] && setup_swap "$OFFLOAD_ID" "$swap"
 
-  run_keepalive "$OFFLOAD_ID" "$cmd" /work
+  run_keepalive "$OFFLOAD_ID" "$cmd" /work || true
   local rc=${BUILD_RC:-1}
   if [ "${INFRA_FAIL:-0}" = 1 ]; then
     KEEP=1; rc=1
@@ -224,7 +229,7 @@ EOF
 
 # ───────────────────────────────────────────────────────────── reusable project box
 cmd_up(){
-  _norm "$@"; set -- "${NORMA[@]}"
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local shape=s-2vcpu-2gb rootfs=devbox:1 name="" egress_all=0; COS_EGRESS=(); local OPTIND=1 o doms d
   while getopts "s:r:n:e:p:E" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;; n) name=$OPTARG;;
@@ -239,6 +244,12 @@ cmd_up(){
     echo "cos: reusing $cur ($(state_get name))" >&2; return 0
   fi
   [ -n "$name" ] || name="cos-proj-$(proj_key)"
+  local existing; existing=$(resolve_id "$name")
+  if [ -n "$existing" ] && [ "$existing" != null ] \
+     && [ "$("$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg i "$existing" '.[]|select(.id==$i)|.status')" = running ]; then
+    state_set id "$existing" name "$name" shape "$shape"
+    echo "cos: adopted existing box $existing ($name)" >&2; return 0
+  fi
   local id; id=$(create_box "$name" "$shape" "$rootfs")
   state_set id "$id" name "$name" shape "$shape"
   echo "cos: project box up: $id ($name, $shape)" >&2
@@ -247,14 +258,14 @@ cmd_up(){
 cmd_run(){
   local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
   wait_running "$id" 15 || die "box $id not running"
-  run_keepalive "$id" "$*" "$(state_get sync_remote)"
+  run_keepalive "$id" "$*" "$(state_get sync_remote)" || true
   local rc=${BUILD_RC:-1}
   [ "${INFRA_FAIL:-0}" = 1 ] && { echo "cos: stream failure; build may still be running. Check: cos run 'cat /tmp/.cos-run.rc'" >&2; rc=1; }
   return "$rc"
 }
 
 cmd_sync(){
-  _norm "$@"; set -- "${NORMA[@]}"
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
   local mode=one-way; local -a excl=(); local OPTIND=1 o
   while getopts "2Mx:" o; do case $o in
@@ -356,7 +367,7 @@ cluster_ls(){
     | jq -r '.members[]? | "  \(.name // .sandbox_id)  ip=\(.ip // "?")  \(.status // "?")"' 2>/dev/null || true
 }
 cluster_up(){
-  _norm "$@"; set -- "${NORMA[@]}"
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local shape=s-1vcpu-1gb rootfs=devbox:1 egress_all=0; COS_EGRESS=(); local OPTIND=1 o doms d
   while getopts "s:r:e:p:E" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;;
@@ -393,10 +404,12 @@ cluster_run(){
   local -a IDA NMA; read -ra IDA <<<"$(state_get cluster_ids)"; read -ra NMA <<<"$(state_get cluster_names)"
   if [ "$all" = 1 ]; then
     local cmd="$*"; [ -n "$cmd" ] || die "command required"
-    local k; for k in "${!IDA[@]}"; do
+    local k agg=0; for k in "${!IDA[@]}"; do
       echo "cos: ── ${NMA[$k]} (${IDA[$k]}) ──" >&2
-      run_keepalive "${IDA[$k]}" "$cmd" ""; done
-    return 0
+      run_keepalive "${IDA[$k]}" "$cmd" "" || true
+      { [ "${INFRA_FAIL:-0}" = 1 ] || [ "${BUILD_RC:-1}" != 0 ]; } && agg=1
+    done
+    return "$agg"
   fi
   local target=${1:?target required: member index (1..N) or name, or -a for all}; shift
   local cmd="$*"; [ -n "$cmd" ] || die "command required"
@@ -405,7 +418,7 @@ cluster_run(){
   else for k in "${!NMA[@]}"; do [ "${NMA[$k]}" = "$target" ] && id="${IDA[$k]}"; done; fi
   [ -n "$id" ] || die "member '$target' not in cluster ($(state_get cluster_names))"
   wait_running "$id" 15 || die "member $id not running"
-  run_keepalive "$id" "$cmd" ""
+  run_keepalive "$id" "$cmd" "" || true
   return "${BUILD_RC:-1}"
 }
 cluster_down(){
@@ -468,8 +481,8 @@ SHELL_ID=""
 on_shell_exit(){ [ -n "$SHELL_ID" ] || return 0
   "$CLI" sandbox rm -y "$SHELL_ID" >/dev/null 2>&1 && echo "cos: destroyed scratch $SHELL_ID" >&2 || true; }
 cmd_shell(){
-  _norm "$@"; set -- "${NORMA[@]}"
-  local shape=s-1vcpu-1gb rootfs=devbox:1; local OPTIND=1 o
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
+  local shape=s-1vcpu-1gb rootfs=devbox:1; COS_EGRESS=(); local OPTIND=1 o
   while getopts "s:r:" o; do case $o in s) shape=$OPTARG;; r) rootfs=$OPTARG;; *) die "usage: cos shell [-s shape] [-r rootfs]";; esac; done
   SHELL_ID=$(create_box "cos-sh-$$-${RANDOM}" "$shape" "$rootfs")
   trap on_shell_exit EXIT INT TERM      # destroy on exit / Ctrl-C / error
@@ -495,7 +508,7 @@ fanout_one(){ # $1=idx $2=cmd $3=shape $4=rootfs $5=staged-tar $6=resdir
   if wait_running "$id" 30 \
      && "$CLI" sandbox push "$id" - /work.tar < "$staged" >/dev/null 2>&1 \
      && "$CLI" sandbox exec "$id" -- bash -lc 'mkdir -p /work && tar -C /work -xf /work.tar && rm -f /work.tar' >/dev/null 2>&1; then
-    run_keepalive "$id" "$cmd" /work "$resdir/$i.log" >/dev/null 2>&1
+    run_keepalive "$id" "$cmd" /work "$resdir/$i.log" >/dev/null 2>&1 || true
     echo "${BUILD_RC:-1}" > "$resdir/$i.rc"
   else
     echo "stage/boot failed" >> "$resdir/$i.log"; echo 1 > "$resdir/$i.rc"
@@ -503,7 +516,7 @@ fanout_one(){ # $1=idx $2=cmd $3=shape $4=rootfs $5=staged-tar $6=resdir
   "$CLI" sandbox rm -y "$id" >/dev/null 2>&1 || true
 }
 cmd_fanout(){
-  _norm "$@"; set -- "${NORMA[@]}"
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local shape=s-1vcpu-1gb rootfs=devbox:1 jobs=2 egress_all=0; COS_EGRESS=(); local -a excl=(); local OPTIND=1 o doms d
   while getopts "s:r:j:e:p:x:E" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;; j) jobs=$OPTARG;;
@@ -524,7 +537,7 @@ cmd_fanout(){
 
   # stage the input tree once; every job pushes the same tarball
   local -a tarx=(); local p
-  for p in "${DEFAULT_EXCLUDES[@]}" "${excl[@]}"; do tarx+=(--exclude "$p"); done
+  for p in "${DEFAULT_EXCLUDES[@]}" ${excl[@]+"${excl[@]}"}; do tarx+=(--exclude "$p"); done
   local staged resdir; staged=$(mktemp "$STATE_DIR/fanout-stage.XXXXXX"); resdir=$(mktemp -d "$STATE_DIR/fanout.XXXXXX")
   tar "${tarx[@]}" -c -C "$dir" . > "$staged" 2>/dev/null || die "staging tar failed"
 
@@ -572,6 +585,9 @@ ensure_cli(){
   [ -z "${COS_NO_AUTOINSTALL:-}" ] || die "createos CLI not found (COS_NO_AUTOINSTALL set) — install: $CLI_INSTALL_URL"
   have curl || die "createos CLI not found and curl missing — install manually: $CLI_INSTALL_URL"
   echo "cos: createos CLI not found — installing via $CLI_INSTALL_URL" >&2
+  if [ "$CLI_INSTALL_URL" != "$CLI_INSTALL_URL_DEFAULT" ] && [ -z "${COS_AUTOINSTALL_ALLOW_CUSTOM_URL:-}" ]; then
+    die "refusing to auto-install createos from a custom COS_CLI_INSTALL_URL ($CLI_INSTALL_URL) — install manually, or set COS_AUTOINSTALL_ALLOW_CUSTOM_URL=1 to trust it"
+  fi
   curl -sfL "$CLI_INSTALL_URL" | sh - >&2 || die "createos install failed — try manually: curl -sfL $CLI_INSTALL_URL | sh -"
   # installer may land in ~/.local/bin, which isn't on this shell's PATH yet
   case ":$PATH:" in *":$HOME/.local/bin:"*) :;; *) PATH="$HOME/.local/bin:$PATH";; esac
@@ -628,7 +644,7 @@ cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on 
   cos fork                            snapshot project box → independent clone
   cos down                            stop sync/tunnels + destroy box (+ cluster)
   cos status                          show active box + sync + tunnels + cluster
-egress presets (-p): python-uv | rust-cargo | npm | github   (-E = unrestricted)
+egress presets (-p): python-uv | rust-cargo | npm | github   (default + -E = UNRESTRICTED egress; -p/-e to allowlist)
 EOF
      exit 2;;
 esac
