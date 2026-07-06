@@ -9,8 +9,8 @@ Two patterns:
 
 ## Requirements
 
-- `createos` CLI on `PATH`, authenticated (`createos sandbox ls` works).
-- `jq`, `tar`, `perl`, `bash`.
+- `createos` CLI, authenticated (`createos sandbox ls` works). **Auto-installs** if missing — `cos` runs the official one-liner (`curl -sfL …/install.sh | sh -`) on first use, then reminds you to `createos login`. Opt out with `COS_NO_AUTOINSTALL=1`; override the source with `COS_CLI_INSTALL_URL`.
+- `jq`, `tar`, `perl`, `bash`, `curl`.
 
 `cos` itself is **not on PATH** by default — run `scripts/cos install` once (symlinks to `~/.local/bin/cos`) and use bare `cos`, or invoke it by full path (`${CLAUDE_PLUGIN_ROOT}/scripts/cos`).
 
@@ -33,13 +33,29 @@ claude --plugin-dir /path/to/createos-plugin
 | Command | What |
 |---|---|
 | `/createos-sandbox:offload [-p preset] [-e dom] [-E] [-x glob] [-o out] [-w GB] [-K] [-s shape] <dir> <cmd>` | one-shot: stage → run (keepalive) → pull → destroy |
+| `/createos-sandbox:fanout [-j N] [-p preset] [-x glob] <dir> <cmd1> [cmd2] …` | run each command in its own throwaway box, in parallel; collect results |
+| `/createos-sandbox:shell [-s shape] [-r rootfs]` | instant throwaway interactive Linux (destroyed on exit; run via `!cos shell`) |
 | `/createos-sandbox:up [-s shape] [-r rootfs] [-n name]` | create/reuse the per-repo project box |
 | `/createos-sandbox:run <cmd>` | exec in the project box (streamed, state persists) |
 | `/createos-sandbox:sync [-2\|-M] [-x glob] <local-dir> [remote-dir]` | start file sync into the project box (background); default one-way, `-2` two-way, `-M` mirror, `-x` exclude |
-| `/createos-sandbox:down` | stop sync + destroy the project box |
-| `/createos-sandbox:status` | show active box + sync state |
+| `/createos-sandbox:tunnel <remote> [local]` | forward a box port to `127.0.0.1` (background, private) |
+| `/createos-sandbox:expose <port>` | public HTTPS URL for a box port (revoke with `cos unexpose`) |
+| `/createos-sandbox:cluster up <N> \| run [<name\|idx>\|-a] <cmd> \| ls \| down` | N boxes on one private network, name-addressable |
+| `/createos-sandbox:disk create \| ls \| attach <disk> <mount> \| detach \| rm` | BYO S3 bucket mounts on the project box |
+| `/createos-sandbox:vpn [register <name> \| up]` | WireGuard L3 into your private networks (needs `wg-quick`) |
+| `/createos-sandbox:fork` | snapshot the project box → independent clone |
+| `/createos-sandbox:down` | stop sync/tunnels + destroy the project box (+ cluster) |
+| `/createos-sandbox:status` | show active box + sync + tunnels + cluster |
 
 Flags (`-s/-r/-e/-o`) come **before** the positionals.
+
+### Networking (tunnel / expose / cluster / VPN)
+
+- **`tunnel`** — reach a box-side service on your laptop. Run a dev server in the box, then `/createos-sandbox:tunnel 3000` → `http://127.0.0.1:3000`. Private, background, no public URL. Stopped by `down`.
+- **`expose`** — public HTTPS link for a port (`<id>-<port>.app.sb.createos.sh`), stable for the box's lifetime. Service must bind `0.0.0.0`. Anyone with the link can reach it.
+- **`cluster`** — multi-machine Linux in one private network: `cluster up 3` spins 3 boxes that reach each other by name (`curl http://cos-cl-<key>-2:8080`). `cluster run -a 'uname -a'` fans a command across all. For distributed-system / DB-replication / p2p / load-test repros. Counts against quota — keep N small.
+- **`vpn`** — join your laptop to the whole private network over WireGuard (reach every sandbox by name/IP). One-time `cos vpn register <name>`, then `cos vpn up` (needs `wg-quick` + sudo, blocks until Ctrl-C — run it in your own terminal).
+- **`fork`** — clone the warm project box from an identical snapshot for matrix/parallel experiments; the fork is independent and self-managed.
 
 ## Skill
 
@@ -52,11 +68,19 @@ A `PreToolUse(Bash)` hook (`scripts/offload-hint.sh`) watches for heavy build/te
 ## Direct CLI (no Claude)
 
 ```bash
-cos install                                   # symlink onto PATH (once)
+cos install                                   # symlink onto PATH (once); createos CLI auto-installs on first use
 cos offload -p python-uv . 'uv sync --frozen --group dev && uv run pytest -q'
 cos offload -p python-uv -p rust-cargo -x target -o dist . 'uv sync --frozen && uv run pytest -q'
 cos up && cos run 'npm ci' && cos sync ~/app /work    # reusable box + one-way sync
-cos down
+cos fanout -j 2 -p python-uv . 'pytest tests/a' 'pytest tests/b'   # parallel, isolated boxes
+cos shell                                            # instant throwaway Linux (destroyed on exit)
+cos run 'npm run dev &' && cos tunnel 3000           # dev server → http://127.0.0.1:3000
+cos expose 8080                                      # public HTTPS URL for port 8080
+cos cluster up 3 && cos cluster run -a 'hostname'    # 3 boxes, one private net
+cos disk create data --bucket my-b --endpoint https://s3.amazonaws.com --access-key … --secret-key …
+cos disk attach data /mnt/data                       # mount S3 into the project box
+cos fork                                             # snapshot → independent clone
+cos down                                             # stops sync/tunnels, destroys box + cluster
 ```
 
 ### Heavy builds (Python/Rust/compiled)
@@ -68,6 +92,6 @@ cos down
 
 ## Safety
 
-- **Sync modes:** `sync` defaults to **one-way** (laptop → box) — box-side writes never touch local. `.git` is skipped by default. `-2` opts into two-way (box writes flow back — use only when you need files back, never on a repo root casually); `-M` mirrors (deletes box-side extras); `-x <glob>` excludes paths. (`--mode`/`-x` need the current `createos` CLI; an old CLI falls back to two-way with a warning.) Prefer `offload -o` to pull artifacts.
+- **Sync modes:** `sync` defaults to **one-way** (laptop → box) — box-side writes never touch local. `.git` and big/regenerable dirs (`node_modules`, `target`, `.venv`, `__pycache__`, `dist`, `build`, …) are excluded by default — install deps *inside* the box (`cos run 'npm ci'`) rather than syncing them up. Same default excludes apply to `offload`/`fanout` uploads. `-2` opts into two-way (box writes flow back — use only when you need files back, never on a repo root casually); `-M` mirrors (deletes box-side extras); `-x <glob>` excludes paths. (`--mode`/`-x` need the current `createos` CLI; an old CLI falls back to two-way with a warning.) Prefer `offload -o` to pull artifacts.
 - **Quota:** 100 sandboxes/day, 2 running at once (external keys). Don't spin a fleet without budgeting.
 - **Scope:** `cos` only ever touches boxes it created (`cos-*`) or the project box in its statefile (`~/.cache/createos-sandbox/`). Your other sandboxes are never touched.
