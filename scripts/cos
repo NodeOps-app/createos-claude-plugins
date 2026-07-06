@@ -155,8 +155,8 @@ on_offload_exit(){ [ -n "$OFFLOAD_ID" ] || return 0
 cmd_offload(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local shape=s-1vcpu-1gb rootfs=devbox:1 out="" swap="" keep_on_fail=0 egress_all=0
-  COS_EGRESS=(); local -a excl=(); local OPTIND=1 o doms d
-  while getopts "s:r:e:o:p:x:w:EK" o; do case $o in
+  COS_EGRESS=(); local -a excl=() _d; local OPTIND=1 o doms d
+  while getopts "s:r:e:o:p:x:w:EKh" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;; o) out=$OPTARG;; w) swap=$OPTARG;;
     e) COS_EGRESS+=(--egress "$OPTARG");;
     p) doms=$(egress_preset "$OPTARG") || die "unknown egress preset '$OPTARG' (have: python-uv rust-cargo npm github)"
@@ -164,7 +164,8 @@ cmd_offload(){
     x) excl+=("$OPTARG");;
     E) egress_all=1;;
     K) keep_on_fail=1;;
-    *) offload_usage; exit 0;; esac; done
+    h) offload_usage; exit 0;;
+    *) offload_usage >&2; exit 2;; esac; done
   shift $((OPTIND-1))
   # no args (e.g. empty slash-command injection) → usage + exit 0, never die
   if [ $# -lt 2 ]; then offload_usage; exit 0; fi
@@ -208,8 +209,9 @@ cmd_offload(){
 
   if [ -n "$out" ]; then
     echo "cos: pulling /work/$out → $dir/" >&2
-    "$CLI" sandbox exec "$OFFLOAD_ID" -- bash -lc "cd /work && tar -c $out" 2>/dev/null \
-      | tar -x -C "$dir" 2>/dev/null || echo "cos: pull of '$out' failed (continuing)" >&2
+    if "$CLI" sandbox exec "$OFFLOAD_ID" -- bash -lc "cd /work && tar -c $out" 2>/dev/null | tar -x -C "$dir"; then :; else
+      echo "cos: ⚠ pull of '$out' FAILED — artifacts NOT retrieved (does '$out' exist under /work?). Box is about to be destroyed." >&2
+    fi
   fi
   return "$rc"
 }
@@ -230,13 +232,14 @@ EOF
 # ───────────────────────────────────────────────────────────── reusable project box
 cmd_up(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
-  local shape=s-2vcpu-2gb rootfs=devbox:1 name="" egress_all=0; COS_EGRESS=(); local OPTIND=1 o doms d
-  while getopts "s:r:n:e:p:E" o; do case $o in
+  local shape=s-2vcpu-2gb rootfs=devbox:1 name="" egress_all=0; COS_EGRESS=(); local -a _d; local OPTIND=1 o doms d
+  while getopts "s:r:n:e:p:Eh" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;; n) name=$OPTARG;;
     e) COS_EGRESS+=(--egress "$OPTARG");;
     p) doms=$(egress_preset "$OPTARG") || die "unknown egress preset '$OPTARG'"
        read -ra _d <<<"$doms"; for d in "${_d[@]}"; do COS_EGRESS+=(--egress "$d"); done;;
     E) egress_all=1;;
+    h) echo "cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E]"; exit 0;;
     *) die "usage: cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E]";; esac; done
   [ "$egress_all" = 1 ] && COS_EGRESS=()
   local cur; cur=$(state_get id)
@@ -268,14 +271,19 @@ cmd_sync(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
   local mode=one-way; local -a excl=(); local OPTIND=1 o
-  while getopts "2Mx:" o; do case $o in
+  while getopts "2Mx:h" o; do case $o in
     2) mode=two-way;; M) mode=mirror;; x) excl+=(--exclude "$OPTARG");;
+    h) echo "cos sync [-2|-M] [-x glob]... <local-dir> [remote-dir]"; exit 0;;
     *) die "usage: cos sync [-2|-M] [-x glob]... <local-dir> [remote-dir]";; esac; done
   shift $((OPTIND-1))
   local dir=${1:?local-dir required}; local remote=${2:-/work}
   [ -d "$dir" ] || die "no such dir: $dir"
-  case "$dir" in "$HOME"/*|/tmp/*) :;; *) die "sync local dir must be under \$HOME or /tmp: $dir";; esac
-  case "$remote" in /etc*|/usr*|/bin*|/sbin*|/lib*) die "refusing sync to system dir $remote";; esac
+  dir=$(cd "$dir" && pwd -P) || die "cannot resolve local dir: $dir"
+  case "$dir" in "$HOME"/*|/tmp/*|/private/tmp/*) :;; *) die "sync local dir must resolve under \$HOME or /tmp: $dir";; esac
+  case "$remote" in
+    *..*) die "remote path must not contain '..': $remote";;
+    /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/root|/root/*|/var|/var/*) die "refusing sync to system dir: $remote";;
+  esac
 
   local -a args=(sandbox sync --local "$dir" --remote "$remote" -y)
   if "$CLI" sandbox sync --help 2>/dev/null | grep -q -- '--mode'; then
@@ -355,7 +363,7 @@ cmd_expose(){
   echo "$url"
 }
 cmd_unexpose(){
-  local id; id=$(state_get id); [ -n "$id" ] || die "no active box"
+  local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
   "$CLI" sandbox edit "$id" --ingress off >/dev/null 2>&1 && echo "cos: ingress disabled for $id" >&2 || die "failed to disable ingress"
 }
 
@@ -368,13 +376,14 @@ cluster_ls(){
 }
 cluster_up(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
-  local shape=s-1vcpu-1gb rootfs=devbox:1 egress_all=0; COS_EGRESS=(); local OPTIND=1 o doms d
-  while getopts "s:r:e:p:E" o; do case $o in
+  local shape=s-1vcpu-1gb rootfs=devbox:1 egress_all=0; COS_EGRESS=(); local -a _d; local OPTIND=1 o doms d
+  while getopts "s:r:e:p:Eh" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;;
     e) COS_EGRESS+=(--egress "$OPTARG");;
     p) doms=$(egress_preset "$OPTARG") || die "unknown egress preset '$OPTARG'"
        read -ra _d <<<"$doms"; for d in "${_d[@]}"; do COS_EGRESS+=(--egress "$d"); done;;
     E) egress_all=1;;
+    h) echo "cos cluster up <N> [-s shape] [-r rootfs] [-e dom|-p preset|-E]"; exit 0;;
     *) die "usage: cos cluster up <N> [-s shape] [-r rootfs] [-e dom|-p preset|-E]";; esac; done
   shift $((OPTIND-1))
   local n=${1:?count required: cos cluster up <N>}
@@ -414,7 +423,7 @@ cluster_run(){
   local target=${1:?target required: member index (1..N) or name, or -a for all}; shift
   local cmd="$*"; [ -n "$cmd" ] || die "command required"
   local id="" k
-  if numeric "$target"; then id="${IDA[$((target-1))]:-}"
+  if numeric "$target"; then [ "$target" -ge 1 ] || die "member index must be ≥1 (have: $(state_get cluster_names))"; id="${IDA[$((target-1))]:-}"
   else for k in "${!NMA[@]}"; do [ "${NMA[$k]}" = "$target" ] && id="${IDA[$k]}"; done; fi
   [ -n "$id" ] || die "member '$target' not in cluster ($(state_get cluster_names))"
   wait_running "$id" 15 || die "member $id not running"
@@ -483,7 +492,9 @@ on_shell_exit(){ [ -n "$SHELL_ID" ] || return 0
 cmd_shell(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
   local shape=s-1vcpu-1gb rootfs=devbox:1; COS_EGRESS=(); local OPTIND=1 o
-  while getopts "s:r:" o; do case $o in s) shape=$OPTARG;; r) rootfs=$OPTARG;; *) die "usage: cos shell [-s shape] [-r rootfs]";; esac; done
+  while getopts "s:r:h" o; do case $o in s) shape=$OPTARG;; r) rootfs=$OPTARG;;
+    h) echo "cos shell [-s shape] [-r rootfs]"; exit 0;;
+    *) die "usage: cos shell [-s shape] [-r rootfs]";; esac; done
   SHELL_ID=$(create_box "cos-sh-$$-${RANDOM}" "$shape" "$rootfs")
   trap on_shell_exit EXIT INT TERM      # destroy on exit / Ctrl-C / error
   echo "cos: scratch box $SHELL_ID ($shape/$rootfs) — exit the shell to destroy it" >&2
@@ -517,15 +528,16 @@ fanout_one(){ # $1=idx $2=cmd $3=shape $4=rootfs $5=staged-tar $6=resdir
 }
 cmd_fanout(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
-  local shape=s-1vcpu-1gb rootfs=devbox:1 jobs=2 egress_all=0; COS_EGRESS=(); local -a excl=(); local OPTIND=1 o doms d
-  while getopts "s:r:j:e:p:x:E" o; do case $o in
+  local shape=s-1vcpu-1gb rootfs=devbox:1 jobs=2 egress_all=0; COS_EGRESS=(); local -a excl=() _d; local OPTIND=1 o doms d
+  while getopts "s:r:j:e:p:x:Eh" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;; j) jobs=$OPTARG;;
     e) COS_EGRESS+=(--egress "$OPTARG");;
     p) doms=$(egress_preset "$OPTARG") || die "unknown egress preset '$OPTARG'"
        read -ra _d <<<"$doms"; for d in "${_d[@]}"; do COS_EGRESS+=(--egress "$d"); done;;
     x) excl+=("$OPTARG");;
     E) egress_all=1;;
-    *) fanout_usage; exit 0;; esac; done
+    h) fanout_usage; exit 0;;
+    *) fanout_usage >&2; exit 2;; esac; done
   shift $((OPTIND-1))
   [ $# -ge 2 ] || { fanout_usage; exit 0; }
   local dir=$1; shift
@@ -563,14 +575,14 @@ cmd_fanout(){
 cmd_disk(){
   local action=${1:-}; shift || true
   case "$action" in
-    create)    "$CLI" sandbox disk create "$@";;    # pass-through (interactive prompts if flags omitted)
+    create)    echo "cos: ⚠ secret keys passed on the command line are visible to other local users (ps) and saved in shell history — prefer the CLI's interactive prompts" >&2; "$CLI" sandbox disk create "$@";;
     ls|list)   "$CLI" sandbox disk ls "$@";;
     show|get)  "$CLI" sandbox disk show "$@";;
     rm|delete) "$CLI" sandbox disk rm "$@";;
     attach)    local id; id=$(state_get id); [ -n "$id" ] || die "no active box — 'cos up' first"
                local disk=${1:?disk name/id required} mp=${2:?mount path required (e.g. /mnt/data)}
                "$CLI" sandbox disk attach "$id" "$disk" "$mp";;
-    detach)    local id; id=$(state_get id); [ -n "$id" ] || die "no active box"
+    detach)    local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
                local disk=${1:?disk name/id required} mp=${2:?mount path required}
                "$CLI" sandbox disk detach "$id" "$disk" "$mp";;
     *) die "usage: cos disk create <name> --bucket --endpoint --access-key --secret-key [--region] [--path-style] | ls | show <name> | attach <disk> <mount> | detach <disk> <mount> | rm <name>";;

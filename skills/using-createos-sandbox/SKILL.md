@@ -19,7 +19,7 @@ Driver: `cos`. It is **not on PATH** by default — run `${CLAUDE_PLUGIN_ROOT}/s
 | **Quick scratch Linux** — try a CLI/tool/snippet on a clean box, no laptop mess | `shell` — instant keyless box, destroyed on exit (interactive; user runs it). |
 | **Big data / weights / shared cache** — mount a dataset or artifact store | `disk` — BYO S3 bucket mounted into the box, survives box death. |
 | **Clean-room repro** — "works on my machine" bugs, dependency conflicts | Fresh `devbox:1` rootfs every time, no host state. |
-| **Live dev loop** — dev server / test watcher / REPL that reacts to edits | Opt-in reusable box + two-way `sync`; Claude edits locally, the box reacts. |
+| **Live dev loop** — dev server / test watcher / REPL that reacts to edits | Opt-in reusable box + `sync` (one-way default; `-2` for two-way); Claude edits locally, the box reacts. |
 | **Reach a box-side service** — dev server, DB, API you want on `localhost` or a public URL | `tunnel` (private → `127.0.0.1`) or `expose` (public HTTPS link). |
 | **Multi-machine cluster** — distributed system, DB replication, p2p mesh, load test across N Linux hosts | `cluster up N` — boxes share one private net, reach each other by name. |
 | **Matrix from warm state** — try N variants from one prepared box | `fork` the project box into independent snapshots. |
@@ -97,7 +97,7 @@ cos down                           # stop sync + destroy box
 
 - `.git`/`.hg` **and big/regenerable dirs** (`node_modules`, `target`, `.venv`, `__pycache__`, `dist`, `build`, `.next`, …) are **excluded by default** — build deps *inside* the box (`cos run 'npm ci'`) instead of syncing them up. (Needs the current CLI's `--exclude`; an old CLI warns it's syncing everything.)
 - Only reach for `-2` when a box-side process genuinely produces files you need back locally — and never on the user's repo root without saying so first. Prefer Pattern A (`offload -o`) for pulling artifacts.
-- Local dir must be under `$HOME` or literal `/tmp` (CLI guard; `/private/tmp/*` is rejected). First `sync` downloads Mutagen (~60–90 s before edits propagate); later syncs settle in seconds.
+- Local dir must be under `$HOME` or literal `/tmp` (`cos` wrapper guard; `/private/tmp/*` is rejected). First `sync` downloads Mutagen (~60–90 s before edits propagate); later syncs settle in seconds.
 - Needs the new `createos` CLI for `--mode`/`-x`; on an old CLI `cos sync` warns and falls back to two-way.
 
 ## Pattern C — networking (reach the box, or wire boxes together)

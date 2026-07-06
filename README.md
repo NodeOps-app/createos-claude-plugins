@@ -5,12 +5,12 @@ Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateO
 Two patterns:
 
 - **One-shot offload** (default, safe): stage a dir → exec → optionally pull artifacts → **auto-destroy**. One-way; box-side changes never touch local unless you ask.
-- **Live session** (opt-in): a reusable per-repo box + two-way file sync, so a dev-server/watcher inside the box reacts to your local edits.
+- **Live session** (opt-in): a reusable per-repo box + one-way file sync (default; `-2` for two-way), so a dev-server/watcher inside the box reacts to your local edits.
 
 ## Requirements
 
 - `createos` CLI, authenticated (`createos sandbox ls` works). **Auto-installs** if missing — `cos` runs the official one-liner (`curl -sfL …/install.sh | sh -`) on first use, then reminds you to `createos login`. Opt out with `COS_NO_AUTOINSTALL=1`; override the source with `COS_CLI_INSTALL_URL`.
-- `jq`, `tar`, `perl`, `bash`, `curl`.
+- `jq`, `tar`, `bash`, `base64` — required host-side. `perl` for ANSI stripping / path resolution. `shasum` (falls back to `sha1sum`/`sha256sum`). `curl` only for the one-time CLI auto-install.
 
 `cos` itself is **not on PATH** by default — run `scripts/cos install` once (symlinks to `~/.local/bin/cos`) and use bare `cos`, or invoke it by full path (`${CLAUDE_PLUGIN_ROOT}/scripts/cos`).
 
@@ -35,13 +35,14 @@ claude --plugin-dir /path/to/createos-plugin
 | `/createos-sandbox:offload [-p preset] [-e dom] [-E] [-x glob] [-o out] [-w GB] [-K] [-s shape] <dir> <cmd>` | one-shot: stage → run (keepalive) → pull → destroy |
 | `/createos-sandbox:fanout [-j N] [-p preset] [-x glob] <dir> <cmd1> [cmd2] …` | run each command in its own throwaway box, in parallel; collect results |
 | `/createos-sandbox:shell [-s shape] [-r rootfs]` | instant throwaway interactive Linux (destroyed on exit; run via `!cos shell`) |
-| `/createos-sandbox:up [-s shape] [-r rootfs] [-n name]` | create/reuse the per-repo project box |
+| `/createos-sandbox:up [-s shape] [-r rootfs] [-n name] [-e dom\|-p preset\|-E]` | create/reuse the per-repo project box (egress allowlisting like `offload`) |
 | `/createos-sandbox:run <cmd>` | exec in the project box (streamed, state persists) |
 | `/createos-sandbox:sync [-2\|-M] [-x glob] <local-dir> [remote-dir]` | start file sync into the project box (background); default one-way, `-2` two-way, `-M` mirror, `-x` exclude |
 | `/createos-sandbox:tunnel <remote> [local]` | forward a box port to `127.0.0.1` (background, private) |
-| `/createos-sandbox:expose <port>` | public HTTPS URL for a box port (revoke with `cos unexpose`) |
+| `/createos-sandbox:expose <port>` | public HTTPS URL for a box port (revoke with `/createos-sandbox:unexpose`) |
+| `/createos-sandbox:unexpose` | revoke the public HTTPS URL / disable ingress |
 | `/createos-sandbox:cluster up <N> \| run [<name\|idx>\|-a] <cmd> \| ls \| down` | N boxes on one private network, name-addressable |
-| `/createos-sandbox:disk create \| ls \| attach <disk> <mount> \| detach \| rm` | BYO S3 bucket mounts on the project box |
+| `/createos-sandbox:disk create \| ls \| show <name> \| attach <disk> <mount> \| detach \| rm` | BYO S3 bucket mounts on the project box |
 | `/createos-sandbox:vpn [register <name> \| up]` | WireGuard L3 into your private networks (needs `wg-quick`) |
 | `/createos-sandbox:fork` | snapshot the project box → independent clone |
 | `/createos-sandbox:down` | stop sync/tunnels + destroy the project box (+ cluster) |

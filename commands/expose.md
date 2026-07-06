@@ -4,7 +4,7 @@ argument-hint: "<port>"
 allowed-tools: Bash
 ---
 
-Enable public ingress and print the HTTPS URL for `<port>`. The service **must bind `0.0.0.0:<port>`** (not `127.0.0.1`) — ingress forwards to the box's external interface. The URL stays live while the box does. Revoke with `cos unexpose`. For a private, local-only link use `/createos-sandbox:tunnel`.
+Enable public ingress and print the HTTPS URL for `<port>`. The service **must bind `0.0.0.0:<port>`** (not `127.0.0.1`) — ingress forwards to the box's external interface. The URL stays live while the box does. Revoke with `/createos-sandbox:unexpose`. For a private, local-only link use `/createos-sandbox:tunnel`.
 
 !`"${CLAUDE_PLUGIN_ROOT}/scripts/cos" expose $ARGUMENTS`
 
