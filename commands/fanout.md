@@ -1,10 +1,10 @@
 ---
 description: Run each of several commands in its OWN throwaway CreateOS box, in parallel (staged from a dir), collect per-job results, auto-destroy. For test shards, config matrices, batch jobs.
-argument-hint: "[-j N] [-p preset] [-s shape] [-x glob] <dir> <cmd1> [cmd2] ..."
+argument-hint: "[-j N] [-e dom|-p preset|-E] [-s shape] [-x glob] <dir> <cmd1> [cmd2] ..."
 allowed-tools: Bash
 ---
 
-Fan a set of commands across isolated throwaway boxes concurrently — each `<cmdN>` runs in its own box staged from `<dir>`, keepalive-protected. Per-job logs + exit codes are summarized at the end; every box auto-destroys. Default concurrency `-j 2` (external-key quota is 2 running at once) — raise only if your plan allows. Big dirs (`node_modules`/`target`/…) are excluded from the upload.
+Fan a set of commands across isolated throwaway boxes concurrently — each `<cmdN>` runs in its own box staged from `<dir>`, keepalive-protected. Per-job logs + exit codes are summarized at the end; every box auto-destroys. Default concurrency `-j 2` (external-key quota is 2 running at once) — raise only if your plan allows. Big dirs (`node_modules`/`target`/…) are excluded from the upload. Egress defaults to the baseline allowlist (github/npm/pypi/crates) per job; `-e`/`-p` swap in an exact set, `-E` for unrestricted.
 
 !`test -n "$ARGUMENTS" && "${CLAUDE_PLUGIN_ROOT}/scripts/cos" fanout $ARGUMENTS || "${CLAUDE_PLUGIN_ROOT}/scripts/cos" fanout`
 

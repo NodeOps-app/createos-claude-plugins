@@ -48,7 +48,7 @@ Flags: `-p <preset>` (egress preset, repeatable) · `-e <domain>` (one domain) �
 
 - **One-way**: local tree → box `/work`. Box-side changes don't touch local unless you pass `-o <path>`. `.git`, `target`, `node_modules`, `__pycache__`, `.venv`, media are excluded from the upload by default.
 - **Survives long/quiet builds**: the command runs detached in-box with a 10 s heartbeat; if the exec stream drops mid-build it re-attaches (the build keeps running, cache intact) instead of dying. Exit code is preserved.
-- **Egress presets**: `python-uv` (astral.sh, pypi, pythonhosted), `rust-cargo` (crates.io ×3, rust-lang, **cdn.pyke.io** — ort-sys/ONNX), `npm`, `github`. Compose with `-e`. A locked-down build that fails on a missing host needs that host added.
+- **Egress defaults to a baseline allowlist** (github, npm, pypi, crates) — most installs need nothing extra. `-p`/`-e` swap in an **exact** set instead of the default (narrower, or covering a host outside the baseline): `python-uv` (astral.sh, pypi, pythonhosted), `rust-cargo` (crates.io ×3, rust-lang, **cdn.pyke.io** — ort-sys/ONNX), `npm`, `github`. Compose presets/domains to combine, or `-E` for unrestricted. A build that fails on a missing host needs it added via `-e <host>` (or the matching preset, or `-E`) — it is not reachable by default.
 - Box is destroyed on success, failure, or interrupt — **unless** `-K` (keep on failure) or an infra/stream error, which keep it so the cache survives (`cos` prints the reconnect + destroy commands).
 
 ### Fanout — same input, many boxes, in parallel

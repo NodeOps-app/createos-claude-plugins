@@ -65,6 +65,17 @@ egress_preset(){ case "$1" in
   github)     echo "github.com objects.githubusercontent.com raw.githubusercontent.com codeload.github.com";;
   *) return 1;; esac; }
 
+# default egress allowlist — applied when the user names no -e/-p and no -E.
+# Union of the common registries/CDNs so typical builds work while arbitrary
+# hosts stay blocked. Name -e/-p for an exact set, or -E to open fully.
+DEFAULT_EGRESS_DOMAINS="$(egress_preset github) $(egress_preset npm) $(egress_preset python-uv) $(egress_preset rust-cargo)"
+apply_default_egress(){ # $1 = egress_all (1 when -E was passed)
+  [ "$1" = 1 ] && { COS_EGRESS=(); return 0; }
+  [ "${#COS_EGRESS[@]}" -gt 0 ] && return 0
+  local d; for d in $DEFAULT_EGRESS_DOMAINS; do COS_EGRESS+=(--egress "$d"); done
+  echo "cos: egress limited to default allowlist (github, npm, pypi, crates) — add hosts with -e/-p, open fully with -E" >&2
+}
+
 resolve_id(){ "$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg n "$1" '.[]|select(.name==$n).id' | head -1; }
 
 # poll until the box is running (race guard before first push/exec)
@@ -171,7 +182,7 @@ cmd_offload(){
   if [ $# -lt 2 ]; then offload_usage; exit 0; fi
   local dir=$1 cmd=$2
   [ -d "$dir" ] || die "no such dir: $dir"
-  [ "$egress_all" = 1 ] && COS_EGRESS=()
+  apply_default_egress "$egress_all"
 
   # warn: heavy compiled build on a small box
   local heavy=0 small=0
@@ -241,7 +252,7 @@ cmd_up(){
     E) egress_all=1;;
     h) echo "cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E]"; exit 0;;
     *) die "usage: cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E]";; esac; done
-  [ "$egress_all" = 1 ] && COS_EGRESS=()
+  apply_default_egress "$egress_all"
   local cur; cur=$(state_get id)
   if [ -n "$cur" ] && [ "$("$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg i "$cur" '.[]|select(.id==$i)|.status')" = running ]; then
     echo "cos: reusing $cur ($(state_get name))" >&2; return 0
@@ -390,7 +401,7 @@ cluster_up(){
   numeric "$n" || die "count not numeric: $n"
   [ "$n" -ge 2 ] || die "cluster needs N≥2 (use 'cos up' for one box)"
   [ "$n" -le 8 ] || die "refusing N>8 — external keys allow 2 running at once; pick a small N and budget quota"
-  [ "$egress_all" = 1 ] && COS_EGRESS=()
+  apply_default_egress "$egress_all"
   [ -z "$(state_get cluster_net)" ] || die "cluster already up ('$(state_get cluster_net)') — 'cos cluster down' first"
   local net; net="cos-net-$(proj_key)"
   "$CLI" sandbox network create "$net" >/dev/null 2>&1 || true   # tolerate 'already exists'
@@ -491,10 +502,16 @@ on_shell_exit(){ [ -n "$SHELL_ID" ] || return 0
   "$CLI" sandbox rm -y "$SHELL_ID" >/dev/null 2>&1 && echo "cos: destroyed scratch $SHELL_ID" >&2 || true; }
 cmd_shell(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
-  local shape=s-1vcpu-1gb rootfs=devbox:1; COS_EGRESS=(); local OPTIND=1 o
-  while getopts "s:r:h" o; do case $o in s) shape=$OPTARG;; r) rootfs=$OPTARG;;
-    h) echo "cos shell [-s shape] [-r rootfs]"; exit 0;;
-    *) die "usage: cos shell [-s shape] [-r rootfs]";; esac; done
+  local shape=s-1vcpu-1gb rootfs=devbox:1 egress_all=0; COS_EGRESS=(); local -a _d; local OPTIND=1 o doms d
+  while getopts "s:r:e:p:Eh" o; do case $o in
+    s) shape=$OPTARG;; r) rootfs=$OPTARG;;
+    e) COS_EGRESS+=(--egress "$OPTARG");;
+    p) doms=$(egress_preset "$OPTARG") || die "unknown egress preset '$OPTARG'"
+       read -ra _d <<<"$doms"; for d in "${_d[@]}"; do COS_EGRESS+=(--egress "$d"); done;;
+    E) egress_all=1;;
+    h) echo "cos shell [-s shape] [-r rootfs] [-e dom|-p preset|-E]"; exit 0;;
+    *) die "usage: cos shell [-s shape] [-r rootfs] [-e dom|-p preset|-E]";; esac; done
+  apply_default_egress "$egress_all"
   SHELL_ID=$(create_box "cos-sh-$$-${RANDOM}" "$shape" "$rootfs")
   trap on_shell_exit EXIT INT TERM      # destroy on exit / Ctrl-C / error
   echo "cos: scratch box $SHELL_ID ($shape/$rootfs) — exit the shell to destroy it" >&2
@@ -543,7 +560,7 @@ cmd_fanout(){
   local dir=$1; shift
   [ -d "$dir" ] || die "no such dir: $dir"
   numeric "$jobs" && [ "$jobs" -ge 1 ] || die "-j must be a positive integer"
-  [ "$egress_all" = 1 ] && COS_EGRESS=()
+  apply_default_egress "$egress_all"
   local -a cmds=("$@"); local n=${#cmds[@]}
   echo "cos: fanout $n job(s), ≤$jobs concurrent ($shape). External keys allow 2 running — keep -j ≤2." >&2
 
@@ -644,7 +661,7 @@ case "$sub" in
 cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on PATH)
   cos offload [flags] <dir> <cmd>     one-shot: stage→run(keepalive)→pull→destroy   (cos offload -h for flags)
   cos fanout [-j N][flags] <dir> <cmd>...   run each <cmd> in its own throwaway box, in parallel  (cos fanout -h)
-  cos shell [-s][-r]                  instant throwaway interactive Linux (destroyed on exit)
+  cos shell [-s][-r][-e|-p|-E]        instant throwaway interactive Linux (destroyed on exit)
   cos up   [-s][-r][-n][-e|-p|-E]     create/reuse project box
   cos run  <cmd>                      run in project box (keepalive)
   cos sync [-2|-M][-x glob] <dir> [remote]   file sync (default one-way, -2 two-way, -M mirror; big dirs excluded)
@@ -656,7 +673,7 @@ cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on 
   cos fork                            snapshot project box → independent clone
   cos down                            stop sync/tunnels + destroy box (+ cluster)
   cos status                          show active box + sync + tunnels + cluster
-egress presets (-p): python-uv | rust-cargo | npm | github   (default + -E = UNRESTRICTED egress; -p/-e to allowlist)
+egress: default = allowlist (github/npm/pypi/crates); -p <preset> | -e <domain> for an exact set; -E = unrestricted
 EOF
      exit 2;;
 esac

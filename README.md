@@ -34,7 +34,7 @@ claude --plugin-dir /path/to/createos-plugin
 |---|---|
 | `/createos-sandbox:offload [-p preset] [-e dom] [-E] [-x glob] [-o out] [-w GB] [-K] [-s shape] <dir> <cmd>` | one-shot: stage → run (keepalive) → pull → destroy |
 | `/createos-sandbox:fanout [-j N] [-p preset] [-x glob] <dir> <cmd1> [cmd2] …` | run each command in its own throwaway box, in parallel; collect results |
-| `/createos-sandbox:shell [-s shape] [-r rootfs]` | instant throwaway interactive Linux (destroyed on exit; run via `!cos shell`) |
+| `/createos-sandbox:shell [-s shape] [-r rootfs] [-e dom\|-p preset\|-E]` | instant throwaway interactive Linux (destroyed on exit; run via `!cos shell`; egress allowlisting like `offload`) |
 | `/createos-sandbox:up [-s shape] [-r rootfs] [-n name] [-e dom\|-p preset\|-E]` | create/reuse the per-repo project box (egress allowlisting like `offload`) |
 | `/createos-sandbox:run <cmd>` | exec in the project box (streamed, state persists) |
 | `/createos-sandbox:sync [-2\|-M] [-x glob] <local-dir> [remote-dir]` | start file sync into the project box (background); default one-way, `-2` two-way, `-M` mirror, `-x` exclude |
@@ -86,7 +86,7 @@ cos down                                             # stops sync/tunnels, destr
 
 ### Heavy builds (Python/Rust/compiled)
 
-- **Egress presets** open the registries a build reaches: `-p python-uv` (astral.sh, pypi, pythonhosted), `-p rust-cargo` (crates.io ×3, rust-lang, **cdn.pyke.io** ← ort-sys/ONNX), `-p npm`, `-p github`. Compose them, add stragglers with `-e <host>`, or `-E` for unrestricted.
+- **Egress defaults to a baseline allowlist** (github, npm, pypi, crates — covers most pip/uv, cargo, npm, git installs). `-p`/`-e` swap in an **exact** set instead: `-p python-uv` (astral.sh, pypi, pythonhosted), `-p rust-cargo` (crates.io ×3, rust-lang, **cdn.pyke.io** ← ort-sys/ONNX), `-p npm`, `-p github`. Compose them, add stragglers with `-e <host>`, or `-E` for unrestricted.
 - **Keepalive**: long/quiet compiles no longer get killed by exec-stream idle resets — the command runs detached with a heartbeat and re-attaches if the stream drops; the build (and its cache) survives. `-K` keeps the box on a real failure so you can inspect.
 - **Excludes**: `.git`/`target`/`node_modules`/`__pycache__`/`.venv`/media are excluded from the upload by default; `-x <glob>` adds more.
 - **Shapes are plan-gated** — a too-big `-s` fails with a clean `Allowed: [...]` list (`createos sandbox shapes` to discover). `-w <GB>` *attempts* swap but `devbox:1` can't `swapon` today, so on a capped plan a torch/maturin build may OOM/ENOSPC — install only the extra/group you need rather than `--all-extras`.

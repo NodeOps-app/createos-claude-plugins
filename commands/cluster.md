@@ -1,10 +1,10 @@
 ---
 description: Manage a cluster of CreateOS boxes on one private network (name-addressable). For multi-machine Linux testing — distributed systems, DB replication, p2p meshes, load tests.
-argument-hint: "up <N> [-s shape] [-p preset] | run [<name|idx>|-a] <cmd> | ls | down"
+argument-hint: "up <N> [-s shape] [-e dom|-p preset|-E] | run [<name|idx>|-a] <cmd> | ls | down"
 allowed-tools: Bash
 ---
 
-Spin up N sandboxes on one private overlay network. Members reach each other **by name** (e.g. `curl http://cos-cl-<key>-2:8080`) — no IPs needed. `run` execs on one member (index `1..N`, its name, or `-a` for all). Clusters count against quota (2 running at once on external keys) — keep N small.
+Spin up N sandboxes on one private overlay network. Members reach each other **by name** (e.g. `curl http://cos-cl-<key>-2:8080`) — no IPs needed. Egress defaults to the baseline allowlist (github/npm/pypi/crates) on every member; `-e`/`-p` swap in an exact set, `-E` for unrestricted. `run` execs on one member (index `1..N`, its name, or `-a` for all). Clusters count against quota (2 running at once on external keys) — keep N small.
 
 !`"${CLAUDE_PLUGIN_ROOT}/scripts/cos" cluster $ARGUMENTS`
 
