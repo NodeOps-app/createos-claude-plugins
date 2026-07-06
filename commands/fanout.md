@@ -4,7 +4,7 @@ argument-hint: "[-j N] [-e dom|-p preset|-E] [-s shape] [-x glob] <dir> <cmd1> [
 allowed-tools: Bash
 ---
 
-Fan a set of commands across isolated throwaway boxes concurrently — each `<cmdN>` runs in its own box staged from `<dir>`, keepalive-protected. Per-job logs + exit codes are summarized at the end; every box auto-destroys. Default concurrency `-j 2` (external-key quota is 2 running at once) — raise only if your plan allows. Big dirs (`node_modules`/`target`/…) are excluded from the upload. Egress defaults to the baseline allowlist (github/npm/pypi/crates) per job; `-e`/`-p` swap in an exact set, `-E` for unrestricted.
+Fan a set of commands across isolated throwaway boxes concurrently — each `<cmdN>` runs in its own box staged from `<dir>`, keepalive-protected. Per-job logs + exit codes are summarized at the end; every box auto-destroys. Default concurrency `-j 2` (external-key quota is 2 running at once) — raise only if your plan allows. Big dirs (`node_modules`/`target`/…) are excluded from the upload. Egress defaults to unrestricted per job; `-e`/`-p` restrict to an exact set, `-E` to keep it explicitly unrestricted.
 
 !`test -n "$ARGUMENTS" && "${CLAUDE_PLUGIN_ROOT}/scripts/cos" fanout $ARGUMENTS || "${CLAUDE_PLUGIN_ROOT}/scripts/cos" fanout`
 

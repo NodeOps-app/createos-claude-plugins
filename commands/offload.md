@@ -4,7 +4,7 @@ argument-hint: "[-p preset] [-e dom] [-E] [-x glob] [-o out] [-w GB] [-K] [-s sh
 allowed-tools: Bash
 ---
 
-Offload to a throwaway CreateOS microVM. Flags precede `<dir> <cmd>`. Egress defaults to a baseline allowlist (github/npm/pypi/crates); `-p python-uv|rust-cargo|npm|github` swaps in an exact set (compose with `-e <dom>` for extras), or `-E` for unrestricted; `-x <glob>` adds upload excludes (`.git`/`target`/`node_modules`/… already excluded); `-o <dir>` pulls artifacts back; `-w <GB>` swap; `-K` keep box on failure. Long/quiet builds survive exec-stream drops (detached run + heartbeat + re-attach). Shapes are plan-gated.
+Offload to a throwaway CreateOS microVM. Flags precede `<dir> <cmd>`. Egress defaults to unrestricted (any host); `-p python-uv|rust-cargo|npm|github` restricts to an exact set (compose with `-e <dom>` for extras), or `-E` to keep it explicitly unrestricted; `-x <glob>` adds upload excludes (`.git`/`target`/`node_modules`/… already excluded); `-o <dir>` pulls artifacts back; `-w <GB>` swap; `-K` keep box on failure. Long/quiet builds survive exec-stream drops (detached run + heartbeat + re-attach). Shapes are plan-gated.
 
 !`test -n "$ARGUMENTS" && "${CLAUDE_PLUGIN_ROOT}/scripts/cos" offload $ARGUMENTS || "${CLAUDE_PLUGIN_ROOT}/scripts/cos" offload`
 

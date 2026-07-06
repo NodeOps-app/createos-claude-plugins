@@ -4,7 +4,7 @@ argument-hint: "[-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E]"
 allowed-tools: Bash
 ---
 
-Bring up (or reuse) the project sandbox. State is tracked per git root, so repeated runs reuse the same warm box. Egress defaults to the same baseline allowlist as `offload` (github/npm/pypi/crates); `-e <domain>` (repeatable) or `-p <preset>` (e.g. `python-uv`, `rust-cargo`, `npm`, `github`) swap in an exact set, or `-E` for unrestricted.
+Bring up (or reuse) the project sandbox. State is tracked per git root, so repeated runs reuse the same warm box. Egress defaults to unrestricted, same as `offload`; `-e <domain>` (repeatable) or `-p <preset>` (e.g. `python-uv`, `rust-cargo`, `npm`, `github`) restrict to an exact set, or `-E` to keep it explicitly unrestricted.
 
 !`"${CLAUDE_PLUGIN_ROOT}/scripts/cos" up $ARGUMENTS`
 
