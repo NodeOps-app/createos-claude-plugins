@@ -1,14 +1,17 @@
-# CLAUDE.md — createos-plugin
+# CLAUDE.md — createos (marketplace)
 
-Public Claude Code plugin: gives Claude a skill + slash commands that drive the
-authed `createos` CLI to run ad-hoc / heavy / untrusted code in disposable
-CreateOS sandboxes. Usage and install live in `README.md`; this file is the
+Public Claude Code plugin **marketplace** (`createos`). Its one plugin,
+`createos-sandbox` (in `createos-sandbox/`), gives Claude a skill + slash
+commands that drive the authed `createos` CLI to run ad-hoc / heavy / untrusted
+code in disposable CreateOS sandboxes. Marketplace index is the root `README.md`;
+plugin usage/install live in `createos-sandbox/README.md`; this file is the
 cross-repo mesh guide.
 
 ## Cross-repo mesh — CreateOS Sandbox
 
-**You are in `createos-plugin` — the public Claude Code plugin.** It shells out
-to the `createos` CLI, so `createos-cli` command / flag changes hit hardest:
+**You are in `createos` — the public Claude Code plugin marketplace; its
+`createos-sandbox` plugin** shells out to the `createos` CLI, so `createos-cli`
+command / flag changes hit hardest:
 keep the skill + slash-command surfaces aligned with the CLI, and any behavior
 claim aligned with `fc`. This repo is one of five in the product mesh.
 
@@ -20,7 +23,7 @@ claim aligned with `fc`. This repo is one of five in the product mesh.
 | **fc-sdk** | `../fc-sdk` | TypeScript SDK **+ `examples/`** | 🌐 public | public SDK methods, wire types, example apps |
 | **createos-cli** | `../createos-cli` | Go CLI | 🌐 public | commands, flags, help/UX text |
 | **website-04** | `../website-04` (`content/docs/Sandbox`) | public docs | 🌐 public | REST / SDK / CLI reference + concept pages |
-| **createos-plugin** | `../createos-plugin` | Claude Code plugin over the `createos` CLI | 🌐 public | skills, slash commands, hooks |
+| **createos** | `../createos-plugin` | Claude Code plugin marketplace; `createos-sandbox` plugin over the `createos` CLI | 🌐 public | skills, slash commands, hooks |
 
 ### What counts as a shared surface
 

@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "createos-sandbox",
-      "source": ".",
+      "source": "./createos-sandbox",
       "description": "Run ad-hoc/heavy/untrusted code in disposable CreateOS microVMs; offload, parallel fanout, scratch shell, reusable box with sync, port tunnel, public expose, network clusters, S3 disks, WireGuard VPN, and fork."
     }
   ]
