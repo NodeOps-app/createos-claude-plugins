@@ -35,7 +35,7 @@ Heavy builds, flaky test suites, and untrusted code don't belong on your laptop.
 /createos-sandbox:offload . "npm ci && npm test"
 ```
 
-The `createos` CLI **auto-installs** on first use; just run `createos login` when prompted. Prefer a local checkout? See [Install](#install).
+The `createos` CLI **auto-installs** on first use. Sign in once with `createos login` (browser OAuth, run it in your own terminal) or `export CREATEOS_API_KEY=<key>`; check with `cos auth`. Prefer a local checkout? See [Install](#install).
 
 ## Plugins
 
@@ -86,7 +86,8 @@ claude --plugin-dir /path/to/createos-claude-plugins/createos-sandbox
 
 ## Requirements
 
-- **[CreateOS](https://createos.sh) account** — the `createos` CLI auto-installs on first use, then `createos login`. Opt out with `COS_NO_AUTOINSTALL=1`.
+- **[CreateOS](https://createos.sh) account** — the `createos` CLI auto-installs on first use. Opt out with `COS_NO_AUTOINSTALL=1`.
+- **Sign-in** — `createos login` in your own terminal (interactive browser OAuth; Claude can't drive a TTY prompt), or `export CREATEOS_API_KEY=<key>` to skip the browser entirely. `cos auth` reports which is active.
 - **Host tools:** `jq`, `tar`, `bash`, `base64`; `perl` for ANSI/path handling; `curl` for the one-time CLI install.
 
 ## Safety

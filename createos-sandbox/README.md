@@ -4,7 +4,7 @@
 
 **Run ad-hoc, heavy, or untrusted code off your machine — from inside Claude Code.**
 
-A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 16 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Sandboxes (~25 ms spawn) that self-destruct when done.
+A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 15 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Sandboxes (~25 ms spawn) that self-destruct when done.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6E56CF)](https://docs.claude.com/en/docs/claude-code)
 [![CreateOS](https://img.shields.io/badge/CreateOS-Sandboxes-0EA5E9)](https://createos.sh)
@@ -68,7 +68,7 @@ The plugin is a **thin Claude-facing surface** over the `createos` CLI. It ships
 
 | Piece | Path | Role |
 |---|---|---|
-| **Slash commands** | `commands/*.md` | 16 commands (`offload`, `fanout`, `shell`, …), each a thin wrapper that calls `scripts/cos` |
+| **Slash commands** | `commands/*.md` | 15 commands (`offload`, `fanout`, `shell`, …), each a thin wrapper that calls `scripts/cos` |
 | **Skill** | `skills/using-createos-sandbox/SKILL.md` | teaches Claude *when* to reach for the sandbox on its own |
 | **Hook** | `hooks/hooks.json` + `scripts/offload-hint.sh` | a non-blocking `PreToolUse(Bash)` nudge on heavy build/test commands |
 | **Driver** | `scripts/cos` | the actual logic — staging, egress, keepalive, sync, networking, state |
@@ -109,7 +109,10 @@ Otherwise, always invoke it by full path (`${CLAUDE_PLUGIN_ROOT}/scripts/cos`). 
 
 ## Requirements
 
-- **A [CreateOS](https://createos.sh) account.** The `createos` CLI **auto-installs** if missing — on first use `cos` runs the official one-liner (`curl -sfL …/install.sh | sh -`), then reminds you to `createos login`. Verify with `createos sandbox ls`. Opt out with `COS_NO_AUTOINSTALL=1`; override the install source with `COS_CLI_INSTALL_URL`.
+- **A [CreateOS](https://createos.sh) account.** The `createos` CLI **auto-installs** if missing — on first use `cos` runs the official one-liner (`curl -sfL …/install.sh | sh -`). Opt out with `COS_NO_AUTOINSTALL=1`; override the install source with `COS_CLI_INSTALL_URL`.
+- **Sign in, one of two ways.** Verify either with `cos auth`.
+  - **Browser (recommended)** — run `createos login` **in your own terminal** and pick "Sign in with browser". This is an interactive prompt, so Claude cannot run it for you; the OAuth session lands in `~/.createos/.oauth`.
+  - **API key** — `export CREATEOS_API_KEY=<key>` (grab one from the [dashboard](https://createos.sh)). Set it and browser login is skipped entirely — the right choice for CI, headless boxes, and devcontainers. Export it in the shell that launches Claude Code; never paste it into a Claude conversation, where it would be written to the transcript.
 - **Host tools:** `jq`, `tar`, `bash`, `base64` (required); `perl` (ANSI stripping / path resolution); `shasum` (falls back to `sha1sum`/`sha256sum`); `curl` (one-time CLI install only).
 - **Optional per feature:** `wg-quick` + `sudo` for [`vpn`](#networking); the current `createos` CLI for sync `--mode`/`--exclude` (an old CLI falls back to two-way with a warning).
 
@@ -329,6 +332,7 @@ cos down                                             # stops sync/tunnels, destr
 
 | Variable | Effect |
 |---|---|
+| `CREATEOS_API_KEY` | sign in without browser login (CI / headless / devcontainers); verify with `cos auth` |
 | `COS_NO_AUTOINSTALL=1` | don't auto-install the `createos` CLI |
 | `COS_CLI_INSTALL_URL` | override the CLI install-script source |
 | `COS_CLI` | use a specific `createos` binary instead of the one on `PATH` |
@@ -337,7 +341,8 @@ cos down                                             # stops sync/tunnels, destr
 
 ## Troubleshooting
 
-- **`createos: command not found` / auth errors** — run `createos login`; verify with `createos sandbox ls`.
+- **`cos: not signed in to CreateOS`** — run `createos login` in your own terminal (not via Claude — it needs a TTY), or `export CREATEOS_API_KEY=<key>`. Verify with `cos auth`.
+- **`createos: command not found`** — the auto-install landed outside `PATH`; add `~/.local/bin` to it and retry.
 - **`cos: command not found`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/cos install`, or call `cos` by full path.
 - **Shape rejected** — you hit a plan gate; run `createos sandbox shapes` and pick from the `Allowed: [...]` list.
 - **Build can't reach a host** — you restricted egress; add the host with `-e <domain>` or the right `-p <preset>`.
