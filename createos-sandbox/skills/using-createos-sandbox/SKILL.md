@@ -1,11 +1,11 @@
 ---
 name: using-createos-sandbox
-description: Use when you need to run code OFF the user's machine — heavy/long builds or test suites, untrusted or unknown code, a parallel test/config matrix across many boxes, an instant clean Linux to try a tool, a live dev-server/watcher Claude edits against, reaching a box-side service from localhost (port tunnel) or the public web (HTTPS expose), a multi-machine cluster on one private network, a WireGuard VPN into that network, or mounting an S3 bucket of data. Offloads to ephemeral CreateOS microVMs via the `cos` helper (stage → exec → pull → auto-destroy), plus fanout, a scratch shell, and an opt-in reusable box with sync, tunnel, expose, cluster, disk, vpn, and snapshot/fork.
+description: Use when you need to run code OFF the user's machine — heavy/long builds or test suites, untrusted or unknown code, a parallel test/config matrix across many boxes, an instant clean Linux to try a tool, a live dev-server/watcher Claude edits against, reaching a box-side service from localhost (port tunnel) or the public web (HTTPS expose), a multi-machine cluster on one private network, a WireGuard VPN into that network, or mounting an S3 bucket of data. Offloads to ephemeral CreateOS Sandboxes via the `cos` helper (stage → exec → pull → auto-destroy), plus fanout, a scratch shell, and an opt-in reusable box with sync, tunnel, expose, cluster, disk, vpn, and snapshot/fork.
 ---
 
 # Using CreateOS Sandbox as remote compute
 
-A CreateOS sandbox is a fast (~25 ms spawn) Firecracker microVM. Use it as throwaway Linux compute instead of running risky or heavy work on the user's laptop.
+A CreateOS Sandbox is fast (~25 ms spawn) and isolated. Use it as throwaway Linux compute instead of running risky or heavy work on the user's laptop.
 
 Driver: `cos`. It is **not on PATH** by default — run `${CLAUDE_PLUGIN_ROOT}/scripts/cos install` once (symlinks to `~/.local/bin/cos`), then use bare `cos`; otherwise call it by that full path. Wraps the authed `createos` CLI; needs `jq`, `tar`, `perl`, `curl`. If the `createos` CLI is missing, `cos` **auto-installs** it (official `install.sh`) on first use, then reminds the user to `createos login` (opt out with `COS_NO_AUTOINSTALL=1`).
 
@@ -13,7 +13,7 @@ Driver: `cos`. It is **not on PATH** by default — run `${CLAUDE_PLUGIN_ROOT}/s
 
 | Situation | Why offload |
 |---|---|
-| **Untrusted / unknown code** — a snippet, a fresh npm/pip package, scraped code, a PoC exploit | Isolation. Escape blast-radius is one disposable VM, not the laptop. |
+| **Untrusted / unknown code** — a snippet, a fresh npm/pip package, scraped code, a PoC exploit | Isolation. Escape blast-radius is one disposable Sandbox, not the laptop. |
 | **Heavy build or test suite** — big `make`, full test run, compile, benchmark | Keeps the laptop free; runs on a sized box (shapes are plan-gated — see Limits). |
 | **Parallel/matrix work** — same job across N configs, test shards, batch | `fanout` — each command in its own throwaway box, concurrently, results collected. |
 | **Quick scratch Linux** — try a CLI/tool/snippet on a clean box, no laptop mess | `shell` — instant keyless box, destroyed on exit (interactive; user runs it). |

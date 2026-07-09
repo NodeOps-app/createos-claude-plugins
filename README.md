@@ -4,10 +4,10 @@
 
 **A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin marketplace for disposable sandbox compute.**
 
-Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateOS](https://createos.sh) Firecracker microVMs — straight from your Claude Code session.
+Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateOS](https://createos.sh) Sandboxes — straight from your Claude Code session.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6E56CF)](https://docs.claude.com/en/docs/claude-code)
-[![CreateOS](https://img.shields.io/badge/CreateOS-Firecracker%20microVMs-0EA5E9)](https://createos.sh)
+[![CreateOS](https://img.shields.io/badge/CreateOS-Sandboxes-0EA5E9)](https://createos.sh)
 [![Spawn](https://img.shields.io/badge/spawn-~25ms-22C55E)](https://createos.sh)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](#contributing)
 
@@ -17,11 +17,11 @@ Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateO
 
 ## Why
 
-Heavy builds, flaky test suites, and untrusted code don't belong on your laptop. `createos-sandbox` gives Claude a skill + slash commands that offload them to throwaway microVMs that spawn in ~25 ms and self-destruct when done — so your machine stays free, your deps stay isolated, and untrusted code never touches local state.
+Heavy builds, flaky test suites, and untrusted code don't belong on your laptop. `createos-sandbox` gives Claude a skill + slash commands that offload them to throwaway CreateOS Sandboxes that spawn in ~25 ms and self-destruct when done — so your machine stays free, your deps stay isolated, and untrusted code never touches local state.
 
 - 🧨 **Disposable** — one-shot offload stages a dir, runs, pulls artifacts, then auto-destroys. Box-side changes never touch local unless you ask.
 - ⚡ **Fast** — ~25 ms spawn; parallel fanout across N boxes for matrix builds and split test suites.
-- 🔒 **Isolated** — untrusted code runs in a microVM, not your shell. Egress can be locked to an exact allowlist.
+- 🔒 **Isolated** — untrusted code runs in a disposable Sandbox, not your shell. Egress can be locked to an exact allowlist.
 - 🔁 **Live loops** — a reusable per-repo box with file sync, port tunnels, and public HTTPS expose for real dev sessions.
 
 ## Quick start

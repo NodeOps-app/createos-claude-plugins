@@ -3,7 +3,7 @@
   "name": "createos-sandbox",
   "displayName": "CreateOS Sandbox",
   "version": "0.5.0",
-  "description": "Run ad-hoc, heavy, or untrusted code OFF your machine in disposable CreateOS Firecracker microVMs. One-shot offload, parallel fanout across N boxes, instant scratch shell, a reusable box with file sync for live dev loops, port tunnel to localhost, public HTTPS expose, multi-box private-network clusters, BYO-S3 disk mounts, WireGuard VPN, and snapshot/fork. Big dirs auto-excluded from uploads; auto-installs the createos CLI if missing.",
+  "description": "Run ad-hoc, heavy, or untrusted code OFF your machine in disposable CreateOS Sandboxes. One-shot offload, parallel fanout across N boxes, instant scratch shell, a reusable box with file sync for live dev loops, port tunnel to localhost, public HTTPS expose, multi-box private-network clusters, BYO-S3 disk mounts, WireGuard VPN, and snapshot/fork. Big dirs auto-excluded from uploads; auto-installs the createos CLI if missing.",
   "author": { "name": "NodeOps", "url": "https://createos.sh" },
   "homepage": "https://createos.sh",
   "keywords": ["sandbox", "createos", "firecracker", "remote-exec", "isolation", "microvm"]

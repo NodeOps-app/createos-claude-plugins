@@ -4,10 +4,10 @@
 
 **Run ad-hoc, heavy, or untrusted code off your machine — from inside Claude Code.**
 
-A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 16 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Firecracker microVMs (~25 ms spawn) that self-destruct when done.
+A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 16 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Sandboxes (~25 ms spawn) that self-destruct when done.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6E56CF)](https://docs.claude.com/en/docs/claude-code)
-[![CreateOS](https://img.shields.io/badge/CreateOS-Firecracker%20microVMs-0EA5E9)](https://createos.sh)
+[![CreateOS](https://img.shields.io/badge/CreateOS-Sandboxes-0EA5E9)](https://createos.sh)
 [![Version](https://img.shields.io/badge/version-0.5.0-blue)](./.claude-plugin/plugin.json)
 
 </div>
@@ -43,7 +43,7 @@ A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives C
 
 Heavy builds, flaky test suites, and untrusted code don't belong on your laptop:
 
-- **Untrusted code** — a dependency's post-install script or an AI-generated snippet runs in a microVM, not your shell. Egress can be locked to an exact allowlist.
+- **Untrusted code** — a dependency's post-install script or an AI-generated snippet runs in a disposable Sandbox, not your shell. Egress can be locked to an exact allowlist.
 - **Heavy work** — `npm ci`, `cargo build`, `pytest`, `go test`, torch installs — keep your machine cool and free while a bigger box does the grind.
 - **Parallel / matrix** — split a test suite or a version matrix across N isolated boxes at once.
 - **Clean-room repros** — reproduce a bug on a pristine Linux box with nothing of yours leaking in.
@@ -61,7 +61,7 @@ scripts/cos            ← this plugin's driver (a portable bash script)
 createos CLI           ← authed control-plane client (auto-installs on first use)
    │
    ▼
-CreateOS Firecracker microVM   ← your code runs here, then the box is destroyed
+CreateOS Sandbox               ← your code runs here, then the box is destroyed
 ```
 
 The plugin is a **thin Claude-facing surface** over the `createos` CLI. It ships four things:
