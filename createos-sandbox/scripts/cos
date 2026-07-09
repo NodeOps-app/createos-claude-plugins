@@ -611,7 +611,54 @@ ensure_cli(){
   case ":$PATH:" in *":$HOME/.local/bin:"*) :;; *) PATH="$HOME/.local/bin:$PATH";; esac
   hash -r 2>/dev/null || true
   have "$CLI" || die "createos installed but not on PATH — add /usr/local/bin or ~/.local/bin to PATH and retry"
-  echo "cos: createos installed ($("$CLI" version 2>/dev/null | head -1 || echo ok)). If calls fail with auth errors, run: createos login" >&2
+  echo "cos: createos installed ($("$CLI" version 2>/dev/null | head -1 || echo ok))." >&2
+}
+
+# ── auth preflight ────────────────────────────────────────────────────────────
+# `createos login` is a TTY prompt (interactive select → browser OAuth), so an
+# agent shell can never drive it. Detect credentials locally instead and hand
+# the sign-in off to the human. CREATEOS_API_KEY wins: set it and no browser
+# login is needed at all.
+CREATEOS_DIR=$HOME/.createos
+
+auth_method(){
+  [ -n "${CREATEOS_API_KEY:-}" ] && { echo env;   return 0; }
+  [ -f "$CREATEOS_DIR/.token" ]  && { echo token; return 0; }
+  [ -f "$CREATEOS_DIR/.oauth" ]  && { echo oauth; return 0; }
+  return 1
+}
+
+ensure_auth(){
+  auth_method >/dev/null && return 0
+  cat >&2 <<'EOF'
+cos: not signed in to CreateOS.
+
+  Ask the user to run this in their own terminal. It needs a TTY and a browser,
+  so it cannot be run from an agent shell:
+
+      createos login        # then pick "Sign in with browser (recommended)"
+
+  Or, for headless / CI / no-browser setups, an API key from
+  https://createos.sh skips browser login entirely:
+
+      export CREATEOS_API_KEY=<key>
+
+  Never ask the user to paste an API key into the conversation — it would be
+  written to the transcript. Have them export it, or sign in with the browser.
+
+  Then re-run: cos auth
+EOF
+  exit 1
+}
+
+cmd_auth(){
+  local m
+  m=$(auth_method) || ensure_auth
+  case "$m" in
+    env)   echo "cos: signed in via CREATEOS_API_KEY (browser login not needed)";;
+    token) echo "cos: signed in via API token ($CREATEOS_DIR/.token)";;
+    oauth) echo "cos: signed in via browser OAuth session ($CREATEOS_DIR/.oauth)";;
+  esac
 }
 
 cmd_install(){
@@ -623,14 +670,16 @@ cmd_install(){
     *) echo "cos: ⚠ $dir not on PATH — add: export PATH=\"$dir:\$PATH\"" >&2;; esac
 }
 
-# install needs no createos; everything else does
+# install needs no createos; auth needs the CLI but is itself the sign-in check
 sub=${1:-}; shift || true
-if [ "$sub" != install ]; then
-  ensure_cli
-  have jq    || die "jq required"
-fi
+case "$sub" in
+  install) :;;
+  auth)    ensure_cli;;
+  *)       ensure_cli; have jq || die "jq required"; ensure_auth;;
+esac
 case "$sub" in
   install)  cmd_install "$@";;
+  auth)     cmd_auth "$@";;
   offload)  cmd_offload "$@";;
   fanout)   cmd_fanout "$@";;
   shell)    cmd_shell "$@";;
@@ -648,6 +697,7 @@ case "$sub" in
   status)   cmd_status "$@";;
   *) cat >&2 <<'EOF'
 cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on PATH)
+  cos auth                            check sign-in (CREATEOS_API_KEY, or `createos login` in a real terminal)
   cos offload [flags] <dir> <cmd>     one-shot: stage→run(keepalive)→pull→destroy   (cos offload -h for flags)
   cos fanout [-j N][flags] <dir> <cmd>...   run each <cmd> in its own throwaway box, in parallel  (cos fanout -h)
   cos shell [-s][-r][-e|-p|-E]        instant throwaway interactive Linux (destroyed on exit)

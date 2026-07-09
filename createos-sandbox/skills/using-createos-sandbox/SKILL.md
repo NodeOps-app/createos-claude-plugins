@@ -7,7 +7,30 @@ description: Use when you need to run code OFF the user's machine — heavy/long
 
 A CreateOS Sandbox is fast (~25 ms spawn) and isolated. Use it as throwaway Linux compute instead of running risky or heavy work on the user's laptop.
 
-Driver: `cos`. It is **not on PATH** by default — run `${CLAUDE_PLUGIN_ROOT}/scripts/cos install` once (symlinks to `~/.local/bin/cos`), then use bare `cos`; otherwise call it by that full path. Wraps the authed `createos` CLI; needs `jq`, `tar`, `perl`, `curl`. If the `createos` CLI is missing, `cos` **auto-installs** it (official `install.sh`) on first use, then reminds the user to `createos login` (opt out with `COS_NO_AUTOINSTALL=1`).
+Driver: `cos`. It is **not on PATH** by default — run `${CLAUDE_PLUGIN_ROOT}/scripts/cos install` once (symlinks to `~/.local/bin/cos`), then use bare `cos`; otherwise call it by that full path. Wraps the authed `createos` CLI; needs `jq`, `tar`, `perl`, `curl`. If the `createos` CLI is missing, `cos` **auto-installs** it (official `install.sh`) on first use (opt out with `COS_NO_AUTOINSTALL=1`).
+
+## Setup — check this once per session, before the first offload
+
+```bash
+cos auth
+```
+
+Healthy output is one of:
+
+```
+cos: signed in via CREATEOS_API_KEY (browser login not needed)
+cos: signed in via browser OAuth session (~/.createos/.oauth)
+cos: signed in via API token (~/.createos/.token)
+```
+
+Anything else means not signed in. **You cannot fix this yourself** — `createos login` is an interactive TTY prompt (a select menu, then browser OAuth on the user's machine), and an agent shell has no TTY. Do not try to run it, and do not try to work around it with `--token`. Relay the two options to the user instead:
+
+1. **Browser (recommended)** — they run `createos login` in their own terminal and pick "Sign in with browser".
+2. **API key** — they `export CREATEOS_API_KEY=<key>` (from <https://createos.sh>) in the shell that launched Claude Code. If that variable is set, no browser login happens at all.
+
+**Never ask the user to paste an API key into the conversation** — it lands in the transcript. Export or browser, nothing else.
+
+Every `cos` command except `install` and `auth` runs this check first, so an unauthenticated box never gets tarballed and uploaded before failing.
 
 ## When to reach for it
 
