@@ -28,7 +28,7 @@ Heavy builds, flaky test suites, and untrusted code don't belong on your laptop.
 
 ```bash
 # 1. Add the marketplace + install the plugin
-/plugin marketplace add NodeOps-app/createos-plugin
+/plugin marketplace add NodeOps-app/createos-claude-plugins
 /plugin install createos-sandbox@createos
 
 # 2. Offload a heavy test run to a throwaway box (auto-destroys)
@@ -67,20 +67,20 @@ Full flags, networking guide, and heavy-build tips live in the [**plugin README*
 
 **From GitHub (recommended):**
 ```
-/plugin marketplace add NodeOps-app/createos-plugin
+/plugin marketplace add NodeOps-app/createos-claude-plugins
 /plugin install createos-sandbox@createos
 ```
 
 **From a local checkout:**
 ```
-git clone https://github.com/NodeOps-app/createos-plugin
-/plugin marketplace add /path/to/createos-plugin
+git clone https://github.com/NodeOps-app/createos-claude-plugins
+/plugin marketplace add /path/to/createos-claude-plugins
 /plugin install createos-sandbox@createos
 ```
 
 **Dev (instant, no install):**
 ```bash
-claude --plugin-dir /path/to/createos-plugin/createos-sandbox
+claude --plugin-dir /path/to/createos-claude-plugins/createos-sandbox
 /reload-plugins      # after editing plugin files
 ```
 

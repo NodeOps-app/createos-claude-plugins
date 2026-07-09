@@ -87,13 +87,13 @@ A reusable per-repo box + one-way file sync (default; `-2` for two-way). A dev s
 
 **From the marketplace (recommended):**
 ```
-/plugin marketplace add NodeOps-app/createos-plugin
+/plugin marketplace add NodeOps-app/createos-claude-plugins
 /plugin install createos-sandbox@createos
 ```
 
 **Dev (instant, no install):**
 ```bash
-claude --plugin-dir /path/to/createos-plugin/createos-sandbox
+claude --plugin-dir /path/to/createos-claude-plugins/createos-sandbox
 /reload-plugins      # after editing plugin files
 ```
 
