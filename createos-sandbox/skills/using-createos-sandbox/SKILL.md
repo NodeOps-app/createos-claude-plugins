@@ -98,14 +98,24 @@ cos fanout -j 2 -p python-uv . 'pytest -q tests/unit' 'pytest -q tests/integrati
 For repeated runs against a warm box, or a dev-server/watcher Claude edits against. One active box per project (git root), tracked in a statefile.
 
 ```bash
-cos up -s s-2vcpu-2gb              # create/reuse the project box
+cos up -s s-2vcpu-2gb              # create the project box, or reuse this project's own
 cos run 'npm ci'                   # warm it (deps persist across runs)
 cos sync ~/app /work               # DEFAULT one-way (laptop→box); background (Mutagen)
 cos run 'npm run dev &'            # start a watcher/server; it sees synced edits
 # ... Claude edits files locally with normal tools; sync propagates them ...
-cos status                         # show box + sync state (mode shown)
-cos down                           # stop sync + destroy box
+cos status                         # show box + sync state (mode shown), ownership, forks
+cos down                           # stop sync + destroy box   (-f also reaps forks)
 ```
+
+`up` is for a **persistent** box you intend to reuse and then `down`. A bare "run this
+in a sandbox" is **not** Pattern B — use `cos offload` (one-shot, auto-destroys) or
+`cos shell`. Reaching for `up` to satisfy "create a sandbox" makes the box outlive the
+task, and a later `cos down` destroys it along with anything else sharing that statefile.
+
+If a box under this project's name is already running but the statefile is gone (another
+checkout, another agent, created by hand), `up` **refuses** rather than adopting it —
+adopting silently would let a later `cos down` destroy a box this project never created.
+`cos up -a` adopts explicitly, and an adopted box is never destroyed by `cos down`.
 
 ### Sync modes
 
@@ -155,7 +165,7 @@ cos fork                         # pauses briefly, forks, resumes; prints the ne
 - **tunnel vs expose**: `tunnel` is private (only your machine, via `127.0.0.1`), `expose` is a public HTTPS link anyone can hit. Prefer `tunnel` for dev loops; `expose` for sharing a preview or a webhook target. A service reached by `expose` **must bind `0.0.0.0:<port>`**, not loopback.
 - **cluster**: peers resolve each other by their box name over the shared overlay network — no IP wrangling. Good for testing distributed systems, DB primaries/replicas, gossip/p2p, or load generators hitting a target box. Every box counts against the running quota (2 on external keys), so keep N small.
 - **vpn**: whole-network L3, heavier than `tunnel` (single port). Needs `wg-quick` on the laptop and sudo for routes, and it blocks — hand `cos vpn up` to the **user** to run in their own terminal rather than launching it as an agent command. It refuses if a route conflicts (e.g. Tailscale on the same CGNAT range) instead of hijacking traffic.
-- **fork**: the clone is independent and **not** tracked as the project box — destroy it yourself (`createos sandbox rm -y <id>`). Forking pauses the project box for ~a second, then resumes it.
+- **fork**: the clone is independent and **not** tracked as the project box, so `cos down` leaves it running. It *is* recorded in the statefile: `cos status` lists forks, `cos down` names the survivors, and `cos down -f` reaps them with the box. Otherwise destroy it yourself (`createos sandbox rm -y <id>`). Forking pauses the project box for ~a second, then resumes it.
 
 ## Scratch box & data disks
 
@@ -177,7 +187,8 @@ cos disk ls
 
 ## Lifecycle & cost
 
-- Ephemeral boxes self-destroy; project boxes carry a 30 m idle auto-pause as a backstop.
-- Always `cos down` when a live session is finished — don't leave boxes running.
-- Quota: 100 sandboxes/day, 2 running at once on external keys. Don't spin a fleet without budgeting against that.
-- Pre-existing boxes the user already runs are NOT yours — `cos` only ever touches boxes it created (tagged `cos-*`) or the project box in the statefile.
+- Ephemeral boxes self-destroy; project boxes carry a 30 m idle auto-pause as a backstop. A paused box still holds its name and its disk — `cos up` resumes it rather than trying (and failing) to create a second box under the same name.
+- Always `cos down` when a live session is finished — don't leave boxes running. Forks survive it; `cos down -f` takes them too.
+- Quota: 100 sandboxes/day, **2 running at once on external keys**. Don't spin a fleet without budgeting against that — `cos fanout -j N` past the cap silently queues rather than running N-wide, so a 3-way fanout serializes into 2 + 1.
+- Pre-existing boxes the user already runs are NOT yours — `cos` only ever destroys boxes it created itself. A box adopted via `cos up -a` is marked unowned and survives `cos down`.
+- Concurrent agents in one project share the statefile; `up`/`down` serialize on a lock, so a teardown can't race a box being created.

@@ -3,8 +3,8 @@ description: Snapshot the active CreateOS project box and fork it into an indepe
 allowed-tools: Bash
 ---
 
-Pause the project box, fork its snapshot into a new independent sandbox (auto-resumes), then resume the project box. The clone starts from identical state and diverges from there. It is **not** tracked as the project box — manage it via the printed `exec`/`destroy` commands.
+Pause the project box, fork its snapshot into a new independent sandbox (auto-resumes), then resume the project box. The clone starts from identical state and diverges from there. It is **not** tracked as the project box — so `cos down` will not destroy it — but it is recorded in the statefile, listed by `cos status`, and reaped by `cos down -f`.
 
 !`"${CLAUDE_PLUGIN_ROOT}/scripts/cos" fork`
 
-Report the fork id above and remind the user to `createos sandbox rm -y <id>` when done — clones count against the 2-running quota.
+Report the fork id above and remind the user to `createos sandbox rm -y <id>` (or `cos down -f`) when done — clones count against the 2-running quota.
