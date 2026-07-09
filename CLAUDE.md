@@ -7,6 +7,24 @@ code in disposable CreateOS sandboxes. Marketplace index is the root `README.md`
 plugin usage/install live in `createos-sandbox/README.md`; this file is the
 cross-repo mesh guide.
 
+## Decisions
+
+Architectural decisions live in `docs/adr/`. Read the relevant one before
+reworking the thing it covers.
+
+| ADR | Decision | Status |
+|---|---|---|
+| [0001](./docs/adr/0001-cos-bash-driver.md) | `cos`, a bash driver, as the plugin's execution engine — not the `createos` CLI directly | accepted, **under review** |
+
+ADR-0001 is load-bearing for anyone touching `scripts/cos`, the skill, or the
+slash commands. Two things it records that are easy to trip over:
+`CLAUDE_PLUGIN_ROOT` is **unset in the Bash tool environment** (so a skill-issued
+`${CLAUDE_PLUGIN_ROOT}/scripts/cos` resolves to `/scripts/cos` and dies), and a
+missing driver makes Claude **fail open** — it hand-rolls the offload out of raw
+CLI primitives and silently loses egress restriction, keepalive, auto-destroy,
+and the auth preflight. The standing recommendation is to fold the engine into
+`createos-cli` and keep this plugin thin.
+
 ## Cross-repo mesh — CreateOS Sandbox
 
 **You are in `createos` — the public Claude Code plugin marketplace; its
