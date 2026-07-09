@@ -11,10 +11,10 @@
 # Subcommands:
 #   cos install [target]                        symlink this script onto PATH (default ~/.local/bin/cos)
 #   cos offload [flags] <local-dir> <cmd>       throwaway box: stage→run→pull→destroy
-#   cos up   [-s][-r][-n][-e|-p|-E]             create/reuse a project box
+#   cos up   [-s][-r][-n][-e|-p|-E][-a]         create/reuse a project box (-a to adopt)
 #   cos run  <cmd>                              run in the project box (keepalive)
 #   cos sync [-2|-M][-x] <local-dir> [remote]   start file sync into the project box (bg)
-#   cos down                                    stop sync + destroy box + clear state
+#   cos down [-f]                               stop sync + destroy box + clear state (-f reaps forks)
 #   cos status                                  show active box + sync state
 #
 # Driver is the authed `createos` CLI. `createos sandbox create` renders a TTY
@@ -48,9 +48,9 @@ strip_ansi(){ perl -pe 's/\e\[[0-9;?]*[ -\/]*[@-~]//g' 2>/dev/null || cat; }
 NORMA=()
 _mapl(){ case "$1" in
   --shape) echo -s;; --rootfs) echo -r;; --out|--output) echo -o;; --name) echo -n;;
-  --egress) echo -e;; --egress-preset) echo -p;; --egress-all) echo -E;;
+  --egress) echo -e;; --egress-preset) echo -p;; --egress-all) echo -E;; --adopt) echo -a;;
   --exclude) echo -x;; --keep-on-fail) echo -K;; --swap) echo -w;;
-  --two-way) echo -2;; --mirror) echo -M;; *) echo "$1";; esac; }
+  --two-way) echo -2;; --mirror) echo -M;; --forks) echo -f;; *) echo "$1";; esac; }
 _norm(){ NORMA=(); while [ $# -gt 0 ]; do case "$1" in
     --) shift; NORMA+=(-- "$@"); break;;
     --*=*) NORMA+=("$(_mapl "${1%%=*}")" "${1#*=}");;
@@ -66,6 +66,15 @@ egress_preset(){ case "$1" in
   *) return 1;; esac; }
 
 resolve_id(){ "$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg n "$1" '.[]|select(.name==$n).id' | head -1; }
+box_status(){ "$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg i "$1" '.[]|select(.id==$i)|.status'; }
+
+# A box idles into `paused` after 30m (auto-pause), and the API still holds its name.
+# Treat paused as live: it is reusable (resume it) and it blocks a same-name create.
+box_live(){ case "$(box_status "$1")" in running|paused) return 0;; *) return 1;; esac; }
+box_resume_if_paused(){ [ "$(box_status "$1")" = paused ] || return 0
+  echo "cos: resuming paused box $1…" >&2
+  "$CLI" sandbox resume "$1" >/dev/null 2>&1 || die "resume of $1 failed — try: createos sandbox resume $1"
+  wait_running "$1" 30 || die "box $1 did not reach running after resume"; }
 
 # poll until the box is running (race guard before first push/exec)
 wait_running(){ local id=$1 to=${2:-30} i s
@@ -97,11 +106,49 @@ create_box(){ # $1=name $2=shape $3=rootfs ; extra --egress in COS_EGRESS array
   printf '%s' "$id"
 }
 
+# ── state lock ────────────────────────────────────────────────────────────────
+# Concurrent agents in one project share $STATE. Without a lock, `up` (read →
+# create → write) races `down` (read → destroy → unlink) and boxes leak or get
+# destroyed out from under a live sync. mkdir is the portable atomic primitive —
+# `flock(1)` is absent on macOS. Reentrant: `up`/`down` hold it across their
+# whole read-modify-write, and the `state_set` calls nested inside just bump depth.
+LOCK="${STATE%.json}.lock"
+LOCK_DEPTH=0
+lock_state(){
+  [ "$LOCK_DEPTH" -gt 0 ] && { LOCK_DEPTH=$((LOCK_DEPTH+1)); return 0; }
+  local i=0 holder holder2
+  until mkdir "$LOCK" 2>/dev/null; do
+    holder=$(cat "$LOCK/pid" 2>/dev/null || true)
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      # Re-read after a beat before stealing: the holder may have exited cleanly and
+      # a third process may already hold a fresh lock. Steal only if the pid file
+      # still names the same dead process — a live successor writes its own pid, and
+      # a successor mid-acquire leaves it empty. Either way the pid changes and we back off.
+      sleep 0.2; holder2=$(cat "$LOCK/pid" 2>/dev/null || true)
+      if [ "$holder" = "$holder2" ] && ! kill -0 "$holder" 2>/dev/null; then
+        echo "cos: clearing stale lock from dead pid $holder" >&2; rm -rf "$LOCK"; continue
+      fi
+    fi
+    i=$((i+1)); [ "$i" -ge 300 ] && die "state lock busy 30s (pid ${holder:-?}) — stale? rm -rf $LOCK"
+    sleep 0.1
+  done
+  echo $$ > "$LOCK/pid"
+  LOCK_DEPTH=1
+  trap unlock_state EXIT INT TERM
+}
+unlock_state(){
+  [ "$LOCK_DEPTH" -le 0 ] && return 0
+  LOCK_DEPTH=$((LOCK_DEPTH-1))
+  [ "$LOCK_DEPTH" -le 0 ] && rm -rf "$LOCK" 2>/dev/null
+  return 0
+}
+
 state_get(){ [ -f "$STATE" ] && jq -r --arg k "$1" '.[$k] // empty' "$STATE" 2>/dev/null || true; }
-state_set(){ local tmp; tmp=$(mktemp); [ -f "$STATE" ] || echo '{}' > "$STATE"
+state_set(){ lock_state; local tmp; tmp=$(mktemp); [ -f "$STATE" ] || echo '{}' > "$STATE"
   local jqargs=() prog='.'
   while [ $# -ge 2 ]; do jqargs+=(--arg "k$#" "$1" --arg "v$#" "$2"); prog="$prog | .[\$k$#]=\$v$#"; shift 2; done
   jq "${jqargs[@]}" "$prog" "$STATE" > "$tmp" && mv "$tmp" "$STATE"
+  unlock_state
 }
 
 # ── set up a swapfile in-box (OOM headroom for compiled-extension builds) ──────
@@ -232,30 +279,49 @@ EOF
 # ───────────────────────────────────────────────────────────── reusable project box
 cmd_up(){
   _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
-  local shape=s-2vcpu-2gb rootfs=devbox:1 name="" egress_all=0; COS_EGRESS=(); local -a _d; local OPTIND=1 o doms d
-  while getopts "s:r:n:e:p:Eh" o; do case $o in
+  local shape=s-2vcpu-2gb rootfs=devbox:1 name="" egress_all=0 adopt=0; COS_EGRESS=(); local -a _d; local OPTIND=1 o doms d
+  while getopts "s:r:n:e:p:Eah" o; do case $o in
     s) shape=$OPTARG;; r) rootfs=$OPTARG;; n) name=$OPTARG;;
     e) COS_EGRESS+=(--egress "$OPTARG");;
     p) doms=$(egress_preset "$OPTARG") || die "unknown egress preset '$OPTARG'"
        read -ra _d <<<"$doms"; for d in "${_d[@]}"; do COS_EGRESS+=(--egress "$d"); done;;
     E) egress_all=1;;
-    h) echo "cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E]"; exit 0;;
-    *) die "usage: cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E]";; esac; done
+    a) adopt=1;;
+    h) echo "cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E] [-a]"; exit 0;;
+    *) die "usage: cos up [-s shape] [-r rootfs] [-n name] [-e dom|-p preset|-E] [-a]";; esac; done
   [ "$egress_all" = 1 ] && COS_EGRESS=()
-  local cur; cur=$(state_get id)
-  if [ -n "$cur" ] && [ "$("$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg i "$cur" '.[]|select(.id==$i)|.status')" = running ]; then
-    echo "cos: reusing $cur ($(state_get name))" >&2; return 0
+  lock_state   # held across check → create → write; released on return via EXIT trap
+  local cur curname; cur=$(state_get id); curname=$(state_get name)
+  if [ -n "$cur" ] && box_live "$cur"; then
+    # Reuse only what was asked for. An explicit -n naming a different box must not
+    # silently hand back the current one — state holds a single project box, so the
+    # caller has to tear the old one down rather than orphan it.
+    [ -z "$name" ] || [ "$name" = "$curname" ] || die "project box $cur ($curname) is already up — one project box per directory.
+  Use it:      cos run …
+  Replace it:  cos down && cos up -n $name"
+    box_resume_if_paused "$cur"
+    echo "cos: reusing $cur ($curname)" >&2; unlock_state; return 0
   fi
   [ -n "$name" ] || name="cos-proj-$(proj_key)"
+  # A live box under our name with no local state was created by someone else
+  # (other checkout, other agent, by hand). Adopting it silently means `cos down`
+  # later destroys a box this project never created — require explicit consent,
+  # and mark it unowned so `down` refuses to destroy it.
   local existing; existing=$(resolve_id "$name")
-  if [ -n "$existing" ] && [ "$existing" != null ] \
-     && [ "$("$CLI" -o json sandbox ls 2>/dev/null | jq -r --arg i "$existing" '.[]|select(.id==$i)|.status')" = running ]; then
-    state_set id "$existing" name "$name" shape "$shape"
-    echo "cos: adopted existing box $existing ($name)" >&2; return 0
+  if [ -n "$existing" ] && [ "$existing" != null ] && box_live "$existing"; then
+    [ "$adopt" = 1 ] || die "box '$name' ($existing, $(box_status "$existing")) already exists, but this project has no state for it.
+  It was not created by this checkout — 'cos down' would destroy a box you don't own.
+  Adopt it:   cos up -a          (adopted boxes are never destroyed by 'cos down')
+  Destroy it: createos sandbox rm -y $existing"
+    box_resume_if_paused "$existing"
+    state_set id "$existing" name "$name" shape "$shape" owned 0
+    echo "cos: adopted existing box $existing ($name) — 'cos down' will NOT destroy it" >&2
+    unlock_state; return 0
   fi
   local id; id=$(create_box "$name" "$shape" "$rootfs")
-  state_set id "$id" name "$name" shape "$shape"
+  state_set id "$id" name "$name" shape "$shape" owned 1
   echo "cos: project box up: $id ($name, $shape)" >&2
+  unlock_state
 }
 
 cmd_run(){
@@ -311,18 +377,46 @@ stop_tunnels(){ [ -f "$TUNLIST" ] || return 0; local pid rest
   rm -f "$TUNLIST"; }
 
 cmd_down(){
-  local id pid; id=$(state_get id); pid=$(state_get sync_pid)
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
+  local destroy_forks=0; local OPTIND=1 o
+  while getopts "fh" o; do case $o in
+    f) destroy_forks=1;;
+    h) echo "cos down [-f]   (-f also destroys forks taken from this box)"; exit 0;;
+    *) die "usage: cos down [-f]";; esac; done
+  lock_state   # held across read → destroy → unlink, so a concurrent `up` can't interleave
+  local id pid owned forks f; id=$(state_get id); pid=$(state_get sync_pid); owned=$(state_get owned)
+  forks=$(state_get fork_ids)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "cos: stopped sync $pid" >&2 || true
   stop_tunnels
   [ -n "$(state_get cluster_net)" ] && cluster_down
-  if [ -n "$id" ]; then "$CLI" sandbox rm -y "$id" >/dev/null 2>&1 && echo "cos: destroyed $id" >&2 || true; fi
+  if [ -n "$forks" ]; then
+    if [ "$destroy_forks" = 1 ]; then
+      for f in $forks; do "$CLI" sandbox rm -y "$f" >/dev/null 2>&1 && echo "cos: destroyed fork $f" >&2 || true; done
+    else
+      echo "cos: ⚠ forks of this box survive (independent clones): $forks" >&2
+      echo "cos:   reap them: cos down -f   |   createos sandbox rm -y $forks" >&2
+    fi
+  fi
+  # pre-`owned` state files predate ownership tracking; they only ever held boxes
+  # `up` created, so absent flag ⇒ owned.
+  if [ -n "$id" ]; then
+    if [ "${owned:-1}" = 0 ]; then
+      echo "cos: ⚠ $id was adopted, not created here — NOT destroying it." >&2
+      echo "cos:   destroy it yourself: createos sandbox rm -y $id" >&2
+    else
+      "$CLI" sandbox rm -y "$id" >/dev/null 2>&1 && echo "cos: destroyed $id" >&2 || true
+    fi
+  fi
   rm -f "$STATE"; echo "cos: state cleared" >&2
+  unlock_state
 }
 
 cmd_status(){
   [ -f "$STATE" ] || { echo "cos: no active box for this project"; return 0; }
   local id; id=$(state_get id)
-  [ -n "$id" ] && echo "active: $id ($(state_get name))  shape=$(state_get shape)"
+  [ -n "$id" ] && echo "active: $id ($(state_get name))  shape=$(state_get shape)  $([ "$(state_get owned)" = 0 ] && echo '[adopted — down will NOT destroy]' || echo '[created here]')"
+  local forks; forks=$(state_get fork_ids)
+  [ -n "$forks" ] && echo "forks:  $forks  (survive 'cos down'; reap with 'cos down -f')"
   local pid; pid=$(state_get sync_pid)
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "sync:   pid $pid  [$(state_get sync_mode)] $(state_get sync_dir) → $(state_get sync_remote)" || echo "sync:   none"
   if [ -f "$TUNLIST" ]; then echo "tunnels:"
@@ -479,9 +573,13 @@ cmd_fork(){
   "$CLI" sandbox resume "$id" >/dev/null 2>&1 || echo "cos: ⚠ resume of $id failed — run 'createos sandbox resume $id'" >&2
   newid=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -1)
   [ -n "$newid" ] || { echo "cos: forked, but couldn't auto-resolve the new id — see 'createos sandbox ls'" >&2; return 0; }
+  # A fork is an independent clone, so `down` won't destroy it — but record it, or
+  # nothing ever will and it leaks silently. `down` reports it; `down -f` reaps it.
+  local forks; forks=$(state_get fork_ids)
+  state_set fork_ids "${forks:+$forks }$newid"
   echo "cos: fork ready: $newid (independent clone; NOT tracked as the project box)" >&2
   echo "cos:   exec:    createos sandbox exec --stream $newid -- bash -lc '…'" >&2
-  echo "cos:   destroy: createos sandbox rm -y $newid" >&2
+  echo "cos:   destroy: createos sandbox rm -y $newid   (or 'cos down -f' to reap forks with the box)" >&2
   echo "$newid"
 }
 
@@ -701,7 +799,7 @@ cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on 
   cos offload [flags] <dir> <cmd>     one-shot: stage→run(keepalive)→pull→destroy   (cos offload -h for flags)
   cos fanout [-j N][flags] <dir> <cmd>...   run each <cmd> in its own throwaway box, in parallel  (cos fanout -h)
   cos shell [-s][-r][-e|-p|-E]        instant throwaway interactive Linux (destroyed on exit)
-  cos up   [-s][-r][-n][-e|-p|-E]     create/reuse project box
+  cos up   [-s][-r][-n][-e|-p|-E][-a] create/reuse project box (-a adopt a box cos didn't create)
   cos run  <cmd>                      run in project box (keepalive)
   cos sync [-2|-M][-x glob] <dir> [remote]   file sync (default one-way, -2 two-way, -M mirror; big dirs excluded)
   cos tunnel <remote> [local]         forward box port → 127.0.0.1 (background)
@@ -709,8 +807,8 @@ cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on 
   cos cluster up <N> [-s|-r|-e|-p|-E] | run [<name|idx>|-a] <cmd> | ls | down    N boxes on one private net
   cos disk create|ls|attach <disk> <mount>|detach|rm   BYO S3 bucket mounts
   cos vpn [up|register [name]]        WireGuard L3 into your private networks (needs wg-quick)
-  cos fork                            snapshot project box → independent clone
-  cos down                            stop sync/tunnels + destroy box (+ cluster)
+  cos fork                            snapshot project box → independent clone (survives down; -f reaps)
+  cos down [-f]                       stop sync/tunnels + destroy box (+ cluster; -f also destroys forks)
   cos status                          show active box + sync + tunnels + cluster
 egress: default = unrestricted (box reaches any host); restrict with -e <domain> or -p <preset>; -E forces unrestricted
 EOF
