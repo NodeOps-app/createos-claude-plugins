@@ -112,6 +112,17 @@ createos/                         # marketplace root
    └─ README.md
 ```
 
+## Claude Managed Agents
+
+This plugin runs sandboxes from *inside* Claude Code, to move work off your machine. The mirror-image problem — letting [Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview) execute their tool calls inside a sandbox you control, as a self-hosted environment — is the SDK's job, not the plugin's. Reference implementations live in [`createos-sandbox-sdk/examples`](https://github.com/NodeOps-app/createos-sandbox-sdk/tree/main/examples):
+
+| example | topology |
+| --- | --- |
+| `36-self-hosted-agent-worker` | one persistent sandbox running an always-on worker |
+| `37-self-hosted-sandbox-per-session` | a fresh sandbox per session |
+
+Anthropic keeps the agent loop and session state; the sandbox is the execution boundary, so agent code, files, and egress stay on your infrastructure.
+
 ## Contributing
 
 Issues and PRs welcome. The plugin is a thin Claude Code surface over the [`createos`](https://createos.sh) CLI — most command logic lives in [`createos-sandbox/scripts/cos`](./createos-sandbox/scripts/cos). Keep the slash-command, skill, and CLI surfaces aligned.
@@ -121,3 +132,4 @@ Issues and PRs welcome. The plugin is a thin Claude Code surface over the [`crea
 - 🌐 [createos.sh](https://createos.sh) — CreateOS platform
 - 📖 [Claude Code plugins](https://docs.claude.com/en/docs/claude-code) — how plugins & marketplaces work
 - 📦 [Plugin README](./createos-sandbox/README.md) — full command & flag reference
+- 🤖 [Managed Agents examples](https://github.com/NodeOps-app/createos-sandbox-sdk/tree/main/examples) — self-hosted environments on CreateOS sandboxes
