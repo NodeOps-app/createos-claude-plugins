@@ -1,6 +1,6 @@
 <div align="center">
 
-# createos
+# CreateOS Claude Plugin Marketplace
 
 **A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin marketplace for disposable sandbox compute.**
 
