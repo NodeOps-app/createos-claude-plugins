@@ -6,7 +6,7 @@
     {
       "name": "createos-sandbox",
       "source": "./createos-sandbox",
-      "description": "Run ad-hoc/heavy/untrusted code in disposable CreateOS Sandboxes; offload, parallel fanout, scratch shell, reusable box with sync, port tunnel, public expose, network clusters, S3 disks, WireGuard VPN, and fork."
+      "description": "Run ad-hoc/heavy/untrusted code in disposable CreateOS Sandboxes; offload, parallel fanout, scratch shell, reusable box with sync, port tunnel, public expose, network clusters, S3 disks, WireGuard VPN, fork, pause/resume, and custom images."
     }
   ]
 }
