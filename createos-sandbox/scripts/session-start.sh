@@ -16,9 +16,19 @@ set -euo pipefail
 root=${CLAUDE_PLUGIN_ROOT:-}
 [ -n "$root" ] || exit 0
 cos="$root/scripts/cos"
-[ -x "$cos" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
+
+# A missing or non-executable driver is exactly the case the fail-closed rule
+# exists for, so it must still be stated — exiting quietly here would leave the
+# agent with no driver AND no instruction, which is how the original fail-open
+# happened. Say it plainly instead.
+if [ ! -x "$cos" ]; then
+  jq -nc --arg m "[createos-sandbox] The sandbox driver is MISSING or not executable at: $cos
+Do not attempt sandbox work. Do NOT substitute raw \`createos sandbox\` primitives — that drops egress restriction, keepalive, auto-destroy and the auth preflight. Tell the user the plugin looks broken and stop." \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$m}}'
+  exit 0
+fi
 
 if command -v cos >/dev/null 2>&1; then
   where="\`cos\` is already on PATH — call it bare."

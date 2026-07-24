@@ -371,8 +371,13 @@ cmd_sync(){
   # only $HOME or /tmp. Left as-is, every sync of a /tmp path is rejected by the CLI
   # with a confusing "must be under $HOME or /tmp" about a path the user never typed.
   # Validate the resolved form, hand the CLI the canonical one.
+  # Gate on /tmp and /private/tmp genuinely being the same directory. On Linux they
+  # are distinct, and rewriting blind would point the CLI at a different tree — which
+  # under `-M` (mirror) deletes box-side files based on the wrong source.
   local cli_dir=$dir
-  case "$dir" in /private/tmp|/private/tmp/*) cli_dir="/tmp${dir#/private/tmp}";; esac
+  if [ "$(cd /tmp 2>/dev/null && pwd -P)" = /private/tmp ]; then
+    case "$dir" in /private/tmp|/private/tmp/*) cli_dir="/tmp${dir#/private/tmp}";; esac
+  fi
 
   local -a args=(sandbox sync --local "$cli_dir" --remote "$remote" -y)
   if "$CLI" sandbox sync --help 2>/dev/null | grep -q -- '--mode'; then
@@ -640,12 +645,16 @@ cmd_fork(){
 # ~6-8s end to end here (the CLI polls for the state transition); resume is slower
 # when the snapshot has to be pulled to a host other than the one it was taken on.
 cmd_pause(){
-  local id; id=$(state_get id); [ -n "$id" ] || die "no active project box — 'cos up' first"
+  case "${1:-}" in -h|--help) echo "cos pause   snapshot the project box; compute billing stops, state survives"; return 0;;
+    ?*) die "cos pause takes no arguments (got '$1')";; esac
+  lock_state   # held across status check → helper teardown → pause, so a concurrent
+               # up/down/sync can't interleave and strand a sync pid we just cleared
+  local id; id=$(state_get id); [ -n "$id" ] || { unlock_state; die "no active project box — 'cos up' first"; }
   case "$(box_status "$id")" in
-    paused)  echo "cos: $id already paused" >&2; return 0;;
+    paused)  :;;   # still tear helpers down: an idle auto-pause leaves them running
     running) :;;
-    '')      die "box $id no longer exists — 'cos down' to clear stale state";;
-    *)       die "box $id is '$(box_status "$id")' — only a running box can be paused";;
+    '')      unlock_state; die "box $id no longer exists — 'cos down' to clear stale state";;
+    *)       unlock_state; die "box $id is '$(box_status "$id")' — only a running box can be paused";;
   esac
   # A paused box serves no traffic, so a live sync would spin on errors and the
   # tunnel pids are already dead sockets. Tear both down rather than leave them
@@ -654,12 +663,18 @@ cmd_pause(){
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "cos: stopped sync $pid (re-run 'cos sync' after resume)" >&2 || true
   state_set sync_pid ""
   stop_tunnels
+  if [ "$(box_status "$id")" = paused ]; then
+    echo "cos: $id already paused (helpers torn down)" >&2; unlock_state; return 0
+  fi
   echo "cos: pausing $id — snapshotting disk+memory, compute billing stops…" >&2
-  "$CLI" sandbox pause "$id" >/dev/null 2>&1 || die "pause failed — try: createos sandbox pause $id"
+  "$CLI" sandbox pause "$id" >/dev/null 2>&1 || { unlock_state; die "pause failed — try: createos sandbox pause $id"; }
   echo "cos: $id paused. Deps, files and disks survive; 'cos resume' (or 'cos up') brings it back." >&2
+  unlock_state
 }
 
 cmd_resume(){
+  case "${1:-}" in -h|--help) echo "cos resume   restore the paused project box (restarts compute billing)"; return 0;;
+    ?*) die "cos resume takes no arguments (got '$1')";; esac
   local id; id=$(state_get id); [ -n "$id" ] || die "no active project box — 'cos up' first"
   case "$(box_status "$id")" in
     running) echo "cos: $id already running" >&2; return 0;;
@@ -680,12 +695,14 @@ template_validate(){
   [ -f "$f" ] || die "no such Dockerfile: $f"
   size=$(wc -c <"$f" | tr -d ' ')
   [ "$size" -le 65536 ] || die "Dockerfile is ${size} bytes — the build service caps source at 64 KiB"
-  froms=$(grep -ciE '^[[:space:]]*FROM[[:space:]]' "$f" || true)
+  # `--` on every grep: a Dockerfile path starting with '-' would otherwise be
+  # consumed as options, silently changing (or skipping) validation.
+  froms=$(grep -ciE -- '^[[:space:]]*FROM[[:space:]]' "$f" || true)
   [ "$froms" = 1 ] || die "Dockerfile has $froms FROM line(s) — template builds are single-stage, exactly one FROM"
-  if grep -qE '^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]+.*\$' "$f"; then
+  if grep -qE -- '^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]+.*\$' "$f"; then
     die "FROM uses a variable — ARG-substituted base images are rejected; write the base image literally"
   fi
-  copies=$(grep -ciE '^[[:space:]]*(COPY|ADD)[[:space:]]' "$f" || true)
+  copies=$(grep -ciE -- '^[[:space:]]*(COPY|ADD)[[:space:]]' "$f" || true)
   [ "$copies" = 0 ] || die "Dockerfile has $copies COPY/ADD line(s) — no build context is uploaded, so they cannot work. Fetch what you need inside a RUN instead."
   echo "cos: Dockerfile preflight ok — single-stage, no COPY/ADD, ${size}B" >&2
   echo "cos: note — FROM must be an operator-allowlisted base (e.g. nodeops/sandbox:debian); the build rejects anything else." >&2
@@ -700,7 +717,9 @@ cmd_template(){
       while [ $# -gt 0 ]; do
         case "$1" in
           -f|--file) file=${2:?path required after -f}; shift 2;;
-          --file=*)  file=${1#*=}; shift;;
+          # -f=X / --file=X are valid CLI syntax; without these the wrapper would
+          # preflight the default Dockerfile and submit a different, unvalidated one
+          -f=*|--file=*) file=${1#*=}; shift;;
           -*)        pass+=("$1"); shift;;
           *)         if [ -n "$name" ]; then pass+=("$1"); else name=$1; fi; shift;;
         esac
