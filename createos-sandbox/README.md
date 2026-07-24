@@ -4,7 +4,7 @@
 
 **Run ad-hoc, heavy, or untrusted code off your machine — from inside Claude Code.**
 
-A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 15 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Sandboxes (~25 ms spawn) that self-destruct when done.
+A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 18 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Sandboxes — roughly 200 ms from create to your first command — that self-destruct when done.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6E56CF)](https://docs.claude.com/en/docs/claude-code)
 [![CreateOS](https://img.shields.io/badge/CreateOS-Sandboxes-0EA5E9)](https://createos.sh)
@@ -27,13 +27,14 @@ A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives C
   - [Shell — throwaway Linux](#shell--throwaway-linux)
   - [Project box — live sessions](#project-box--live-sessions)
   - [Networking](#networking)
+  - [Pause, resume, and custom images](#pause-resume-and-custom-images)
   - [Disks — BYO S3](#disks--byo-s3)
 - [Egress control](#egress-control)
 - [Heavy builds](#heavy-builds)
 - [Uploads & excludes](#uploads--excludes)
 - [Shapes](#shapes)
 - [The skill](#the-skill)
-- [Auto-suggest hook](#auto-suggest-hook)
+- [Hooks](#hooks)
 - [Direct CLI cookbook](#direct-cli-cookbook)
 - [Safety & scope](#safety--scope)
 - [Environment variables](#environment-variables)
@@ -68,12 +69,12 @@ The plugin is a **thin Claude-facing surface** over the `createos` CLI. It ships
 
 | Piece | Path | Role |
 |---|---|---|
-| **Slash commands** | `commands/*.md` | 15 commands (`offload`, `fanout`, `shell`, …), each a thin wrapper that calls `scripts/cos` |
-| **Skill** | `skills/using-createos-sandbox/SKILL.md` | teaches Claude *when* to reach for the sandbox on its own |
-| **Hook** | `hooks/hooks.json` + `scripts/offload-hint.sh` | a non-blocking `PreToolUse(Bash)` nudge on heavy build/test commands |
-| **Driver** | `scripts/cos` | the actual logic — staging, egress, keepalive, sync, networking, state |
+| **Slash commands** | `commands/*.md` | 18 commands (`offload`, `fanout`, `shell`, …), each a thin wrapper that calls `scripts/cos` |
+| **Skill** | `skills/using-createos-sandbox/SKILL.md` + `references/` | teaches Claude *when* to reach for the sandbox on its own, with depth loaded on demand |
+| **Hooks** | `hooks/hooks.json` + `scripts/` | `SessionStart` publishes the driver's absolute path; `PreToolUse(Bash)` nudges on heavy build/test commands |
+| **Driver** | `scripts/cos` | the actual logic — staging, egress, keepalive, sync, networking, lifecycle, state |
 
-Everything runs through `${CLAUDE_PLUGIN_ROOT}/scripts/cos`, so the plugin works regardless of whether `cos` is on your `PATH`.
+Slash commands invoke `${CLAUDE_PLUGIN_ROOT}/scripts/cos`, which Claude Code expands when the command is loaded. **The Bash tool's own environment does not carry that variable**, so when the *skill* decides to offload on its own it needs a real path — that is what the `SessionStart` hook supplies. Without it the path collapses to `/scripts/cos`, and the observed failure mode is Claude quietly rebuilding the offload out of raw CLI primitives, losing egress restriction, keepalive, auto-destroy, and the auth preflight along the way. See [ADR-0001](../docs/adr/0001-cos-bash-driver.md).
 
 ## Two patterns
 
@@ -99,13 +100,13 @@ claude --plugin-dir /path/to/createos-claude-plugins/createos-sandbox
 
 ### Put `cos` on your PATH (optional but recommended)
 
-`cos` is **not on `PATH`** by default. To use bare `cos` in your own terminal:
+`cos` is **not on `PATH`** by default. To use bare `cos` in your own terminal, run its installer once by absolute path:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/cos install   # symlinks to ~/.local/bin/cos
+/path/to/createos-claude-plugins/createos-sandbox/scripts/cos install   # symlinks to ~/.local/bin/cos
 ```
 
-Otherwise, always invoke it by full path (`${CLAUDE_PLUGIN_ROOT}/scripts/cos`). Slash commands do this for you automatically.
+`${CLAUDE_PLUGIN_ROOT}` only expands inside slash-command frontmatter — it is **not** set in your shell, nor in Claude's Bash tool environment. Slash commands resolve the path for you; for autonomous skill use the `SessionStart` hook publishes it. Running `cos install` once removes the question entirely.
 
 ## Requirements
 
@@ -133,6 +134,8 @@ Otherwise, always invoke it by full path (`${CLAUDE_PLUGIN_ROOT}/scripts/cos`). 
 | [`disk`](#disks--byo-s3) `create \| ls \| show \| attach \| detach \| rm` | BYO S3 bucket mounts on the project box |
 | [`vpn`](#networking) `[register <name> \| up]` | WireGuard L3 into your private networks |
 | [`fork`](#networking) | snapshot the project box → independent clone |
+| [`pause`](#pause-resume-and-custom-images) · [`resume`](#pause-resume-and-custom-images) | park the warm project box at zero compute cost / restore it exactly |
+| [`template`](#pause-resume-and-custom-images) `submit <name> [-f Dockerfile] \| ls \| show \| logs \| rm` | build a custom rootfs so boxes boot pre-provisioned |
 | [`down`](#project-box--live-sessions) | stop sync/tunnels + destroy the project box (+ cluster) |
 | [`status`](#project-box--live-sessions) | show active box + sync + tunnels + cluster |
 
@@ -208,7 +211,8 @@ A **reusable, per-repo** box addressed by your working directory. `up` creates i
 - **`up`** is idempotent — run it again on the same repo and it reuses the same box instead of creating a new one.
 - **`run`** streams output and keeps box-side state between calls (installed deps, running processes).
 - **`sync`** is **one-way by default** (laptop → box). `-2` = two-way (box writes flow back), `-M` = mirror (deletes box-side extras), `-x <glob>` = exclude. First run downloads Mutagen (~60–90 s before edits propagate). **Install deps *inside* the box** (`cos run 'npm ci'`) rather than syncing `node_modules` up — big/regenerable dirs are excluded by default.
-- **`down`** stops sync + tunnels and destroys the project box (and any cluster).
+- **`pause`/`resume`** park the box at zero compute cost and bring it back exactly — see [Pause, resume, and custom images](#pause-resume-and-custom-images). Prefer `pause` over `down` when the box has a warm toolchain you'll want again.
+- **`down`** stops sync + tunnels and **destroys** the project box (and any cluster). The next session starts from scratch.
 - **`status`** shows the active box + sync + tunnels + cluster.
 
 ```bash
@@ -226,9 +230,30 @@ A **reusable, per-repo** box addressed by your working directory. `up` creates i
 | **`tunnel <remote> [local]`** | Reach a box-side service on your laptop. Run a dev server in the box, then `tunnel 3000` → `http://127.0.0.1:3000`. Private, background, no public URL. Stopped by `down`. |
 | **`expose <port>`** | A **public HTTPS** link for a port — `<id>-<port>.app.sb.createos.sh`, stable for the box's lifetime. The service must bind `0.0.0.0`. **Anyone with the link can reach it.** Revoke with `unexpose`. |
 | **`unexpose`** | Revoke the public URL / disable ingress on the active box. |
-| **`cluster up <N>`** | N boxes on one private network, reaching each other by name (`curl http://cos-cl-<key>-2:8080`). `cluster run -a '<cmd>'` fans a command across all; `cluster run <name\|idx> '<cmd>'` targets one. `cluster ls` / `cluster down` manage them. For distributed-system / DB-replication / p2p / load-test repros. **Counts against quota — keep N small.** |
+| **`cluster up <N>`** | N boxes on one private network, reaching each other by **fully-qualified** name (`curl http://cos-cl-<key>-2.fc.local:8080` — the bare short name is NXDOMAIN). `cluster run -a '<cmd>'` fans a command across all; `cluster run <name\|idx> '<cmd>'` targets one. `cluster ls` / `cluster down` manage them. For distributed-system / DB-replication / p2p / load-test repros. **Counts against quota — keep N small.** |
 | **`vpn register <name>`** then **`vpn up`** | Join your laptop to the whole private network over WireGuard (reach every sandbox by name/IP). `vpn up` needs `wg-quick` + `sudo` and **blocks until Ctrl-C** — run it in your own terminal (`!cos vpn up`). |
 | **`fork`** | Snapshot the warm project box → an independent clone for matrix/parallel experiments. The fork is self-managed. |
+
+### Pause, resume, and custom images
+
+```
+/createos-sandbox:pause
+/createos-sandbox:resume
+/createos-sandbox:template submit <name> [-f Dockerfile] | ls | show <name> | logs [-f] <name> | rm <name>
+```
+
+**`pause` is the cheap way to end a session.** It snapshots the whole box — disk, memory, and running processes — frees the host, and stops compute billing, so a box with a warm toolchain costs nothing while parked. `resume` restores it exactly — files, installed dependencies, and processes that were running when it paused. End to end through the CLI both operations land around 6–8 s (measured), and resume is slower when the snapshot has to be pulled to a different host than the one it was taken on. `down`, by contrast, destroys the box and forces the next session to reinstall everything.
+
+`pause` stops the file sync and any tunnels first, since a paused box serves no traffic. Re-run `sync` / `tunnel` / `expose` after resuming. The project box also carries a 30-minute idle auto-pause as a backstop; raise it with `createos sandbox edit <id> --auto-pause 4h` when a box is serving an exposed URL that people will hit intermittently, or the demo will look dead between visitors.
+
+**`template` bakes a toolchain into an image** so boxes boot pre-provisioned instead of running the same install prelude on every offload. The build service enforces constraints that would otherwise only surface as a rejection after upload, so `cos` preflights the Dockerfile locally: exactly one `FROM` (single-stage), an operator-allowlisted base written literally (no `ARG` substitution), **no `COPY`/`ADD`** (no build context is uploaded — fetch inside a `RUN`), and 64 KiB of source at most. Two builds run concurrently per account.
+
+```bash
+/createos-sandbox:template submit myimage -f Dockerfile
+/createos-sandbox:up -r myimage          # or: offload -r myimage . "<cmd>"
+```
+
+A custom image is slow on its **first** boot on each host (that host has to fetch it) and fast on every boot after. The built-ins — `devbox:1`, `ubuntu:26.04`, `debian:13`, `alpine:3.20` — are kept warm and never pull; `createos sandbox rootfs` lists them.
 
 ### Disks — BYO S3
 
@@ -268,13 +293,21 @@ Mount **your own** S3 bucket into the project box.
 > /createos-sandbox:offload -p python-uv -p rust-cargo -e cdn.example.com . "…"
 > ```
 
+**How the allowlist is enforced.** Rules can be a domain, `*.domain`, an IP, a CIDR, or any of those with a `:port`, and the list is allow-only — there is no deny token, so every destination a job needs has to be enumerated. Enforcement is not uniform, and the difference matters when blocking exfiltration is the actual goal:
+
+- **IP and CIDR rules are enforced in the host kernel and apply immediately.** Code inside the box cannot bypass them.
+- **Domain rules are matched on the TLS SNI by a host-side proxy** and take roughly 30 seconds to propagate after being set. Because the match is on SNI, **filtering cleartext HTTP by domain is not tight.**
+
+So a domain allowlist is the right control for "this build should only reach pypi and crates.io", and IP/CIDR rules are the right control for an adversarial workload. DNS keeps resolving for blocked destinations — a blocked connection fails as a connection error (e.g. `curl` exit 35), not a name-resolution failure, so checking whether DNS works will mislead you when debugging.
+
 ## Heavy builds
 
 - **Egress:** default unrestricted; use `-p`/`-e` to lock it down (see above).
 - **Keepalive:** long/quiet compiles run detached with a heartbeat and survive stream drops. `-K` keeps the box on a real failure for inspection.
 - **Excludes:** `.git`/`target`/`node_modules`/`__pycache__`/`.venv`/media are excluded from the upload by default; `-x <glob>` adds more.
-- **Swap caveat:** `-w <GB>` *attempts* swap, but `devbox:1` can't `swapon` today — on a capped plan a torch/maturin build may OOM/ENOSPC. Install only the extra/group you need (e.g. `uv sync --group dev`) rather than `--all-extras`.
-- **Shapes are plan-gated:** a too-big `-s` fails with a clean `Allowed: [...]` list.
+- **Swap caveat:** `-w <GB>` *attempts* swap, but `devbox:1` can't `swapon` today — so a torch/maturin build on a small box may OOM/ENOSPC. Install only the extra/group you need (e.g. `uv sync --group dev`) rather than `--all-extras`.
+- **Shape rejection:** a shape your account can't use fails with a clean `Allowed: [...]` list — pick from it.
+- **Bandwidth:** each box starts with a fixed allowance for traffic it initiates (5 GiB by default). A large model download or `docker pull` can exhaust it, after which outbound traffic stops. Top it up additively via `createos sandbox edit <id>`; the exec, file-transfer, and tunnel channels stay reachable regardless.
 
 ## Uploads & excludes
 
@@ -290,16 +323,25 @@ Add more with `-x <glob>` (repeatable). Install dependencies **inside** the box 
 ## Shapes
 
 - Default shape: **`s-1vcpu-1gb`**. Default rootfs: **`devbox:1`**.
-- Pick a bigger box with `-s <shape>`. Shapes are **plan-gated** — an over-quota `-s` fails with an `Allowed: [...]` list.
-- Discover what your plan allows: `createos sandbox shapes`.
+- Pick a bigger box with `-s <shape>`. A shape your account can't use is rejected with an `Allowed: [...]` list — pick from it rather than guessing.
+- Discover what you can boot: `createos sandbox shapes` (sizes) and `createos sandbox rootfs` (images).
 
 ## The skill
 
 `using-createos-sandbox` teaches Claude *when* to offload — untrusted code, heavy builds/tests, parallel/matrix work, clean-room repros, live dev loops — so it reaches for the sandbox on its own instead of grinding on your laptop. It drives the same `scripts/cos` helper the slash commands use.
 
-## Auto-suggest hook
+`SKILL.md` stays a decision surface; the depth lives in `skills/using-createos-sandbox/references/` and is loaded only when a task needs it:
 
-A non-blocking `PreToolUse(Bash)` hook (`scripts/offload-hint.sh`) watches for heavy build/test commands (`npm ci`, `make`, `pytest`, `go test`, `cargo build`, `pip install`, …) and adds a one-line nudge to consider `/createos-sandbox:offload`. **The command still runs** — the hook only suggests — and it skips sandbox/git/docker commands. Silence it with `COS_NO_HINT=1`.
+| Reference | Covers |
+|---|---|
+| `offload-and-egress.md` | offload flag table, egress presets and enforcement caveats, fanout, upload excludes, heavy-build OOM/disk/bandwidth traps |
+| `networking.md` | choosing between tunnel/expose/cluster/vpn, cluster DNS names, expose gotchas, WireGuard setup |
+| `lifecycle-and-images.md` | pause/resume, auto-pause tuning, fork caveats, built-in rootfs vs custom templates, env vars, remote editor, self-terminating jobs, single-file transfer, measured timings |
+
+## Hooks
+
+- **`SessionStart`** (`scripts/session-start.sh`) publishes the driver's absolute path into Claude's context. This is what makes autonomous, skill-driven offload work at all — see [How it works](#how-it-works) and [ADR-0001](../docs/adr/0001-cos-bash-driver.md). It writes nothing to disk.
+- **`PreToolUse(Bash)`** (`scripts/offload-hint.sh`) watches for heavy build/test commands (`npm ci`, `make`, `pytest`, `go test`, `cargo build`, `pip install`, …) and adds a one-line nudge to consider `/createos-sandbox:offload`. **The command still runs** — the hook only suggests — and it skips sandbox/git/docker commands. Silence it with `COS_NO_HINT=1`.
 
 ## Direct CLI cookbook
 
@@ -318,6 +360,9 @@ cos cluster up 3 && cos cluster run -a 'hostname'    # 3 boxes, one private net
 cos disk create data --bucket my-b --endpoint https://s3.amazonaws.com --access-key … --secret-key …
 cos disk attach data /mnt/data                       # mount S3 into the project box
 cos fork                                             # snapshot → independent clone
+cos template submit myimage -f Dockerfile            # bake a toolchain into a reusable image
+cos pause                                            # park the warm box at zero compute cost
+cos resume                                           # bring it back exactly as it was
 cos down                                             # stops sync/tunnels, destroys box + cluster
 ```
 
@@ -325,7 +370,8 @@ cos down                                             # stops sync/tunnels, destr
 
 - **One-way by default.** `sync` and offload uploads are laptop → box; box-side writes never touch local unless you opt into `-2` (two-way) or pull with `offload -o`. Use `-2` deliberately — never casually on a repo root. `-M` (mirror) additionally **deletes** box-side extras.
 - **Scoped statefile.** `cos` only ever touches boxes it created (`cos-*`) or the project box recorded in its statefile. Your other sandboxes are never touched. State lives at `${COS_STATE_DIR:-${XDG_CACHE_HOME:-~/.cache}/createos-sandbox}/<project>.json` (plus a `.tunnels` sidecar).
-- **Quota.** 100 sandboxes/day, 2 running at once (external keys). Don't spin a fleet without budgeting — `cluster`/`fanout` count against it.
+- **Quota.** External keys have been observed to allow 2 boxes running at once, with a daily creation cap. Neither is published policy — treat them as observed behaviour, budget `cluster`/`fanout` against them, and expect excess jobs to queue rather than fail.
+- **Ending a session.** `pause` keeps the box (and its warm state) at zero compute cost; `down` destroys it. Either is fine — leaving a box *running* is not.
 - **Untrusted code.** Restrict egress (`-p`/`-e`) so a malicious dependency can't exfiltrate or phone home.
 
 ## Environment variables
@@ -343,8 +389,11 @@ cos down                                             # stops sync/tunnels, destr
 
 - **`cos: not signed in to CreateOS`** — run `createos login` in your own terminal (not via Claude — it needs a TTY), or `export CREATEOS_API_KEY=<key>`. Verify with `cos auth`.
 - **`createos: command not found`** — the auto-install landed outside `PATH`; add `~/.local/bin` to it and retry.
-- **`cos: command not found`** — run `${CLAUDE_PLUGIN_ROOT}/scripts/cos install`, or call `cos` by full path.
-- **Shape rejected** — you hit a plan gate; run `createos sandbox shapes` and pick from the `Allowed: [...]` list.
+- **`cos: command not found`** — run `cos install` by its full path (the `SessionStart` hook prints that path into Claude's context), or call `cos` by full path. Do not type `${CLAUDE_PLUGIN_ROOT}` into a Bash command — that variable is unset in the Bash tool's environment and the path resolves to `/scripts/cos`.
+- **`/scripts/cos: no such file`** — same cause. Never work around it by rebuilding the offload from raw `createos sandbox create/push/exec`: that drops egress restriction, keepalive, auto-destroy, and the auth preflight.
+- **Shape rejected** — run `createos sandbox shapes` and pick from the `Allowed: [...]` list in the error.
+- **Box says paused / `cos run` refuses** — the 30 m idle auto-pause fired, or someone ran `pause`. `cos resume` brings it back; raise the timeout with `createos sandbox edit <id> --auto-pause 4h`.
+- **Template build rejected** — `cos template submit` preflights single-stage/no-`COPY`/64 KiB locally; a rejection past that is usually a base image outside the operator allowlist.
 - **Build can't reach a host** — you restricted egress; add the host with `-e <domain>` or the right `-p <preset>`.
 - **`sync` copied `node_modules` anyway** — your `createos` CLI is old and lacks `--exclude`; upgrade it (`cos` warns when this happens).
 - **Build OOM/ENOSPC on a small box** — bump `-s <shape>`; `-w` swap doesn't work on `devbox:1`. Install only the deps you need.

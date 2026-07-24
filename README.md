@@ -8,7 +8,7 @@ Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateO
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6E56CF)](https://docs.claude.com/en/docs/claude-code)
 [![CreateOS](https://img.shields.io/badge/CreateOS-Sandboxes-0EA5E9)](https://createos.sh)
-[![Spawn](https://img.shields.io/badge/spawn-~25ms-22C55E)](https://createos.sh)
+[![Spawn](https://img.shields.io/badge/create%20to%20first%20command-~200ms-22C55E)](https://createos.sh)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](#contributing)
 
 </div>
@@ -17,12 +17,13 @@ Run ad-hoc, heavy, or untrusted code **off your machine** in disposable [CreateO
 
 ## Why
 
-Heavy builds, flaky test suites, and untrusted code don't belong on your laptop. `createos-sandbox` gives Claude a skill + slash commands that offload them to throwaway CreateOS Sandboxes that spawn in ~25 ms and self-destruct when done — so your machine stays free, your deps stay isolated, and untrusted code never touches local state.
+Heavy builds, flaky test suites, and untrusted code don't belong on your laptop. `createos-sandbox` gives Claude a skill + slash commands that offload them to throwaway CreateOS Sandboxes — created and running your first command in roughly 200 ms, self-destructing when done — so your machine stays free, your deps stay isolated, and untrusted code never touches local state.
 
 - 🧨 **Disposable** — one-shot offload stages a dir, runs, pulls artifacts, then auto-destroys. Box-side changes never touch local unless you ask.
-- ⚡ **Fast** — ~25 ms spawn; parallel fanout across N boxes for matrix builds and split test suites.
+- ⚡ **Fast** — ~200 ms from create to first command; parallel fanout across N boxes for matrix builds and split test suites.
 - 🔒 **Isolated** — untrusted code runs in a disposable Sandbox, not your shell. Egress can be locked to an exact allowlist.
 - 🔁 **Live loops** — a reusable per-repo box with file sync, port tunnels, and public HTTPS expose for real dev sessions.
+- 💤 **Cheap to keep** — `pause` snapshots a warm box (deps and all) at zero compute cost; `resume` brings it back in a handful of seconds.
 
 ## Quick start
 
@@ -59,6 +60,8 @@ The `createos` CLI **auto-installs** on first use. Sign in once with `createos l
 | `/createos-sandbox:disk …` | mount your own S3 bucket into the project box |
 | `/createos-sandbox:vpn …` | WireGuard L3 into your private networks |
 | `/createos-sandbox:fork` | snapshot the project box → independent clone |
+| `/createos-sandbox:pause` · `resume` | park the warm box at zero compute cost, then restore it exactly |
+| `/createos-sandbox:template …` | build a custom image so boxes boot with the toolchain already installed |
 | `/createos-sandbox:status` | show active box + sync + tunnels + cluster |
 
 Full flags, networking guide, and heavy-build tips live in the [**plugin README**](./createos-sandbox/README.md).
@@ -95,7 +98,7 @@ claude --plugin-dir /path/to/createos-claude-plugins/createos-sandbox
 - **One-way by default** — offload uploads and sync are laptop → box; box-side writes never flow back unless you opt in (`-2`).
 - **Excludes** — `.git`, `node_modules`, `target`, `.venv`, and other regenerable dirs are stripped from uploads by default.
 - **Scoped** — `cos` only ever touches boxes it created (`cos-*`) or the project box in its statefile. Your other sandboxes are never touched.
-- **Quota** — 100 sandboxes/day, 2 running at once (external keys). Don't spin a fleet without budgeting.
+- **Quota** — external keys have been observed to allow 2 boxes running at once, with a daily creation cap. This is observed behaviour, not published policy — budget `cluster` and `fanout` against it and expect excess jobs to queue rather than fail.
 
 ## Repository layout
 
@@ -106,8 +109,8 @@ createos/                         # marketplace root
 └─ createos-sandbox/              # the plugin
    ├─ .claude-plugin/plugin.json
    ├─ commands/                   # slash commands
-   ├─ skills/                     # the using-createos-sandbox skill
-   ├─ hooks/                      # PreToolUse offload-hint
+   ├─ skills/                     # the using-createos-sandbox skill + references/
+   ├─ hooks/                      # SessionStart driver-path + PreToolUse offload-hint
    ├─ scripts/cos                 # the CLI driver
    └─ README.md
 ```

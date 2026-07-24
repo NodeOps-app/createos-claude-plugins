@@ -22,8 +22,25 @@ slash commands. Two things it records that are easy to trip over:
 `${CLAUDE_PLUGIN_ROOT}/scripts/cos` resolves to `/scripts/cos` and dies), and a
 missing driver makes Claude **fail open** — it hand-rolls the offload out of raw
 CLI primitives and silently loses egress restriction, keepalive, auto-destroy,
-and the auth preflight. The standing recommendation is to fold the engine into
-`createos-cli` and keep this plugin thin.
+and the auth preflight.
+
+The ADR's interim mitigation is now shipped: `scripts/session-start.sh`
+(`SessionStart` hook) publishes the driver's resolved absolute path into context
+and states that a missing driver is a hard stop. Do not reintroduce
+`${CLAUDE_PLUGIN_ROOT}` into skill prose or into any Bash command — it is valid
+only in slash-command frontmatter. The standing recommendation to fold the engine
+into `createos-cli` and keep this plugin thin is unaffected.
+
+## Related tooling
+
+**createos-sandbox-ghar** (`../createos-sandbox-ghar`) is a sibling public
+automation surface over the same CreateOS Sandbox control plane — ephemeral
+GitHub Actions self-hosted runners (one microVM per CI job) instead of this
+repo's Claude Code IDE integration. Different trigger (`workflow_job`
+webhook vs. IDE slash command / skill), different execution engine
+(Cloudflare Worker + `createos-sandbox-sdk` vs. this repo's `cos` bash
+driver + CLI), same underlying sandbox lifecycle. Not a mesh-protocol
+member (see Cross-repo mesh below) — cross-reference only.
 
 ## Cross-repo mesh — CreateOS Sandbox
 

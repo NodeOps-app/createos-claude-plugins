@@ -44,4 +44,10 @@ Not yet decided, and deliberately not decided here:
 
 - **`fc` exec semantics.** `run_keepalive` polls to detect a dropped exec stream. Whether that is the right shape in Go depends on what the control plane actually exposes for exec status. `fc` is the source of truth; a client must not invent server behaviour.
 - **Migration shape.** Incremental (ship `createos sandbox offload` + keepalive, have `cos` delegate when present, then strip) rather than big-bang — the bash is battle-tested and the Go is not yet written.
-- **Interim fix for `CLAUDE_PLUGIN_ROOT`.** A `SessionStart` hook can inject the resolved absolute path into context (hooks *do* get `CLAUDE_PLUGIN_ROOT`), with no filesystem mutation. It would be deleted alongside `cos`. Alternatives considered: having the hook run `cos install` (writes to `~/.local/bin` unasked), or teaching the skill to glob `~/.claude/plugins/cache/*/createos-sandbox/*/scripts/cos` (brittle — an internal Claude Code layout, and wrong for `--plugin-dir` dev installs).
+- **Migration ordering** for the verbs `cos` has grown since this ADR was written (`pause`, `resume`, `template`). The lifecycle verbs are near-passthrough and move cheaply; the template preflight is client-side validation of server constraints and belongs wherever the constraints are known.
+
+### Shipped since
+
+**Interim fix for `CLAUDE_PLUGIN_ROOT` — implemented** in `scripts/session-start.sh` (`SessionStart` hook). Hooks *do* receive `CLAUDE_PLUGIN_ROOT`, so the hook resolves it and states the driver's absolute path in context, along with an explicit instruction that a missing driver is a hard stop rather than a licence to hand-roll the offload from raw CLI primitives. No filesystem mutation; deleted alongside `cos` when the engine moves. Alternatives rejected at the time and still rejected: having the hook run `cos install` (writes to `~/.local/bin` unasked), and teaching the skill to glob `~/.claude/plugins/cache/*/createos-sandbox/*/scripts/cos` (brittle — an internal Claude Code layout, and wrong for `--plugin-dir` dev installs).
+
+This closes the *reliability* half of the fail-open problem. It does not close the *design* half: the safe path is still a wrapper the agent has to find, rather than the obvious one. That argument for folding the engine into `createos-cli` stands unchanged.
