@@ -1,0 +1,41 @@
+0.6.0 release record — how these changes were validated.
+
+Method: two layers. Layer A drove a nested Claude Code (Sonnet) in tmux with
+the plugin loaded via --plugin-dir, tracing every tool call via
+--output-format stream-json. Layer B exercised the cos driver directly with
+29 assertions against a live control plane, including negative cases.
+
+Results: 24/29 on the first Layer B pass; every remaining failure was
+investigated and either fixed or explained. Layer A confirmed the plugin
+loads, the SessionStart hook fires, the skill self-triggers without a slash
+command, and the prototype -> public URL -> verify flow works end to end
+(HTTP 200, correct body).
+
+Three commands were found to be entirely broken in 0.5.0:
+  - fork crashed on every run (multibyte parsed into the variable name),
+    leaving the box paused and the clone orphaned. The orphan was identified
+    by confirming it carried the parent's marker file.
+  - sync never passed the sandbox positional, so it always failed into a log
+    while cos status reported a healthy pid.
+  - sync of any /tmp path was rejected by the CLI because cos resolved it to
+    /private/tmp on macOS.
+All three are fixed and verified live (sync propagates in ~10s).
+
+Documentation claims were checked rather than trusted. Corrected: spawn
+timing, egress enforcement semantics, cluster DNS (FQDN only — the bare short
+name is NXDOMAIN, proven by splitting the DNS/IP/TCP hops on a live two-box
+cluster), shape "plan gating", and quota figures.
+
+Known and unresolved, tracked for follow-up:
+  - The skill is never invoked during autonomous use; the model reaches for
+    Bash directly, so SKILL.md is not in context when the verb is chosen. The
+    critical rule was moved into the SessionStart hook as mitigation, which
+    stopped the project-box misuse but not the habit of hand-staging files
+    with tar/base64 instead of using offload. This is a skill-triggering
+    problem and wants the description-optimization loop.
+  - Deferred from the adversarial review: sync/tunnel pids are killed without
+    verifying process identity (PID reuse), and a second sync overwrites the
+    recorded pid without stopping the first. Both pre-existing.
+
+Reviewed by Codex (adversarial pass): 0 critical, 3 high, 6 medium, 1 low.
+All findings introduced by this release were fixed before landing.
