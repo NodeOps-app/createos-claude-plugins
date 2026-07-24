@@ -295,8 +295,8 @@ Mount **your own** S3 bucket into the project box.
 
 **How the allowlist is enforced.** Rules can be a domain, `*.domain`, an IP, a CIDR, or any of those with a `:port`, and the list is allow-only — there is no deny token, so every destination a job needs has to be enumerated. Enforcement is not uniform, and the difference matters when blocking exfiltration is the actual goal:
 
-- **IP and CIDR rules are enforced in the host kernel and apply immediately.** Code inside the box cannot bypass them.
-- **Domain rules are matched on the TLS SNI by a host-side proxy** and take roughly 30 seconds to propagate after being set. Because the match is on SNI, **filtering cleartext HTTP by domain is not tight.**
+- **IP and CIDR rules apply immediately** and cannot be bypassed from inside the box.
+- **Domain rules take roughly 30 seconds to apply** after being set, and are a strong control for HTTPS traffic but a weak one for cleartext HTTP.
 
 So a domain allowlist is the right control for "this build should only reach pypi and crates.io", and IP/CIDR rules are the right control for an adversarial workload. DNS keeps resolving for blocked destinations — a blocked connection fails as a connection error (e.g. `curl` exit 35), not a name-resolution failure, so checking whether DNS works will mislead you when debugging.
 

@@ -47,8 +47,8 @@ The rule grammar is allow-list only — there is no deny token, so every destina
 
 Enforcement is not uniform, and the difference matters when the threat model is exfiltration:
 
-- **IP and CIDR rules are enforced in the host kernel and take effect immediately.** Code inside the box cannot bypass them.
-- **Domain rules are matched on the TLS SNI by a host-side proxy**, and take roughly 30 seconds to propagate after being set. Because the match is on SNI, **plain-HTTP filtering by domain is not tight** — an allow-list of domain names is a strong control for HTTPS traffic and a weak one for cleartext HTTP.
+- **IP and CIDR rules take effect immediately** and cannot be bypassed from inside the box.
+- **Domain rules take roughly 30 seconds to apply** after being set, and they are a strong control for HTTPS traffic but a weak one for cleartext HTTP.
 
 So: a domain allow-list is the right tool for "this build should only reach pypi and crates.io." For an adversarial workload where blocking exfiltration is the actual goal, prefer IP/CIDR rules, and expect the 30-second window after any domain-rule change.
 
