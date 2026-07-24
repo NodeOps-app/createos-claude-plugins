@@ -14,6 +14,8 @@
 #   cos up   [-s][-r][-n][-e|-p|-E][-a]         create/reuse a project box (-a to adopt)
 #   cos run  <cmd>                              run in the project box (keepalive)
 #   cos sync [-2|-M][-x] <local-dir> [remote]   start file sync into the project box (bg)
+#   cos pause | cos resume                      park the warm box at zero compute cost / bring it back
+#   cos template submit <name> [-f Dockerfile]  build a custom rootfs (bake the toolchain once)
 #   cos down [-f]                               stop sync + destroy box + clear state (-f reaps forks)
 #   cos status                                  show active box + sync state
 #
@@ -325,7 +327,20 @@ cmd_up(){
 }
 
 cmd_run(){
+  # `run` takes the command as a plain string — there is no `--` separator and no
+  # per-command flags. Catch the help probes explicitly; otherwise they get sent to
+  # the box as a command and come back as a confusing shell error.
+  case "${1:-}" in
+    -h|--help|"") echo "cos run <cmd>   run a command in the project box (keepalive, state persists)"
+                  echo "  the command is ONE string, no '--' separator:  cos run 'npm ci && npm test'"
+                  echo "  one-shot work in a throwaway box instead:      cos offload [flags] <dir> <cmd>"
+                  return 0;;
+  esac
   local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
+  # An idle box auto-pauses. Say so plainly instead of letting wait_running time
+  # out into a generic "not running" — and leave the resume as the caller's call,
+  # since resuming restarts compute billing.
+  [ "$(box_status "$id")" = paused ] && die "box $id is paused (idle auto-pause, or 'cos pause') — 'cos resume' first"
   wait_running "$id" 15 || die "box $id not running"
   run_keepalive "$id" "$*" "$(state_get sync_remote)" || true
   local rc=${BUILD_RC:-1}
@@ -351,7 +366,15 @@ cmd_sync(){
     /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/root|/root/*|/var|/var/*) die "refusing sync to system dir: $remote";;
   esac
 
-  local -a args=(sandbox sync --local "$dir" --remote "$remote" -y)
+  # `pwd -P` above resolves symlinks so the guard can't be walked around — but on
+  # macOS /tmp IS a symlink to /private/tmp, and createos-cli's own guard accepts
+  # only $HOME or /tmp. Left as-is, every sync of a /tmp path is rejected by the CLI
+  # with a confusing "must be under $HOME or /tmp" about a path the user never typed.
+  # Validate the resolved form, hand the CLI the canonical one.
+  local cli_dir=$dir
+  case "$dir" in /private/tmp|/private/tmp/*) cli_dir="/tmp${dir#/private/tmp}";; esac
+
+  local -a args=(sandbox sync --local "$cli_dir" --remote "$remote" -y)
   if "$CLI" sandbox sync --help 2>/dev/null | grep -q -- '--mode'; then
     args+=(--mode "$mode")
     local p; for p in "${DEFAULT_EXCLUDES[@]}"; do args+=(--exclude "$p"); done   # skip big/regenerable dirs
@@ -367,6 +390,10 @@ cmd_sync(){
     mirror)  echo "cos: ⚠ mirror — files on the box not present in $dir will be DELETED" >&2;;
   esac
   echo "cos: first run downloads Mutagen (~60-90s before edits propagate); .git + node_modules/target/.venv/… excluded by default (build deps INSIDE the box via 'cos run')" >&2
+  # The sandbox positional goes LAST: it was missing entirely (every sync died with
+  # "please provide a sandbox ID or name"), and it has to follow the flags because
+  # createos-cli stops parsing flags at the first positional — same trap as `tunnel`.
+  args+=("$id")
   nohup "$CLI" "${args[@]}" >"$STATE_DIR/sync-$id.log" 2>&1 &
   state_set sync_pid "$!" sync_dir "$dir" sync_remote "$remote" sync_mode "$mode"
   echo "cos: sync pid $! ($mode, log: $STATE_DIR/sync-$id.log)" >&2
@@ -436,7 +463,10 @@ cmd_tunnel(){
   numeric "$local_p" || die "local port not numeric: $local_p"
   wait_running "$id" 15 || die "box $id not running"
   local log="$STATE_DIR/tunnel-$id-$remote.log"
-  nohup "$CLI" sandbox tunnel "$id" --remote "$remote" --local "$local_p" >"$log" 2>&1 &
+  # flags MUST precede the <sandbox> positional — createos-cli's tunnel command
+  # stops parsing flags at the first positional arg, so `tunnel <id> --remote X`
+  # drops --remote and dies "--remote <port> is required".
+  nohup "$CLI" sandbox tunnel --remote "$remote" --local "$local_p" "$id" >"$log" 2>&1 &
   local pid=$!
   printf '%s %s:%s\n' "$pid" "$local_p" "$remote" >> "$TUNLIST"
   sleep 1
@@ -455,6 +485,22 @@ cmd_expose(){
   local url=${tmpl//<port>/$port}
   echo "cos: public URL (service MUST bind 0.0.0.0:$port, not 127.0.0.1) — lives while the box does:" >&2
   echo "$url"
+  # Reachability probe. Ingress 502s until the service actually answers on
+  # 0.0.0.0:$port, so tell the caller now whether the box side is live instead
+  # of letting them discover a 502 in the browser. Non-fatal: the URL is valid
+  # for the box's lifetime and a not-yet-started service may come up later.
+  if have curl; then
+    local code=000 i
+    for i in 1 2 3; do
+      code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null)  # curl prints 000 on no-response
+      case $code in 2??|3??|4??) break;; esac
+      [ "$i" -lt 3 ] && sleep 2
+    done
+    case $code in
+      2??|3??|4??) echo "cos: ✓ reachable (HTTP $code)" >&2;;
+      *)           echo "cos: ⚠ ingress on, but nothing answered on 0.0.0.0:$port (HTTP $code) — start the service / rebind it to 0.0.0.0, then reload (URL stays valid)." >&2;;
+    esac
+  fi
 }
 cmd_unexpose(){
   local id; id=$(state_get id); [ -n "$id" ] || die "no active box — run 'cos up' first"
@@ -498,7 +544,8 @@ cluster_up(){
   done
   unset COS_NET
   state_set cluster_net "$net" cluster_ids "${ids# }" cluster_names "${names# }"
-  echo "cos: cluster '$net' up ($n boxes) — peers reach each other by name, e.g. curl http://cos-cl-$(proj_key)-2:PORT" >&2
+  # Peers resolve on the FQDN only — the bare short name is NXDOMAIN in the guest.
+  echo "cos: cluster '$net' up ($n boxes) — peers reach each other by name, e.g. curl http://cos-cl-$(proj_key)-2.fc.local:PORT" >&2
   cluster_ls
 }
 cluster_run(){
@@ -569,7 +616,10 @@ cmd_fork(){
     die "fork failed — see $STATE_DIR/last-fork.log (project box resumed)"
   fi
   after=$("$CLI" -o json sandbox ls 2>/dev/null | jq -r '.[].id' | sort)
-  echo "cos: resuming project box $id…" >&2
+  # brace the expansion: a bare `$id` followed directly by a multibyte char (the
+  # ellipsis) is parsed as part of the variable NAME, so `set -u` kills the script
+  # here — after the fork has already happened, orphaning the clone.
+  echo "cos: resuming project box ${id}…" >&2
   "$CLI" sandbox resume "$id" >/dev/null 2>&1 || echo "cos: ⚠ resume of $id failed — run 'createos sandbox resume $id'" >&2
   newid=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -1)
   [ -n "$newid" ] || { echo "cos: forked, but couldn't auto-resolve the new id — see 'createos sandbox ls'" >&2; return 0; }
@@ -581,6 +631,95 @@ cmd_fork(){
   echo "cos:   exec:    createos sandbox exec --stream $newid -- bash -lc '…'" >&2
   echo "cos:   destroy: createos sandbox rm -y $newid   (or 'cos down -f' to reap forks with the box)" >&2
   echo "$newid"
+}
+
+# ───────────────────────────── pause/resume: park the warm box at zero compute cost
+# `down` destroys — the next session reinstalls every dependency. `pause` snapshots
+# disk + memory to storage and frees the host, so a box with a warm toolchain costs
+# nothing while idle and comes back with its processes intact. Both operations take
+# ~6-8s end to end here (the CLI polls for the state transition); resume is slower
+# when the snapshot has to be pulled to a host other than the one it was taken on.
+cmd_pause(){
+  local id; id=$(state_get id); [ -n "$id" ] || die "no active project box — 'cos up' first"
+  case "$(box_status "$id")" in
+    paused)  echo "cos: $id already paused" >&2; return 0;;
+    running) :;;
+    '')      die "box $id no longer exists — 'cos down' to clear stale state";;
+    *)       die "box $id is '$(box_status "$id")' — only a running box can be paused";;
+  esac
+  # A paused box serves no traffic, so a live sync would spin on errors and the
+  # tunnel pids are already dead sockets. Tear both down rather than leave them
+  # half-alive; the caller re-establishes them after resume.
+  local pid; pid=$(state_get sync_pid)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "cos: stopped sync $pid (re-run 'cos sync' after resume)" >&2 || true
+  state_set sync_pid ""
+  stop_tunnels
+  echo "cos: pausing $id — snapshotting disk+memory, compute billing stops…" >&2
+  "$CLI" sandbox pause "$id" >/dev/null 2>&1 || die "pause failed — try: createos sandbox pause $id"
+  echo "cos: $id paused. Deps, files and disks survive; 'cos resume' (or 'cos up') brings it back." >&2
+}
+
+cmd_resume(){
+  local id; id=$(state_get id); [ -n "$id" ] || die "no active project box — 'cos up' first"
+  case "$(box_status "$id")" in
+    running) echo "cos: $id already running" >&2; return 0;;
+    paused)  :;;
+    '')      die "box $id no longer exists — 'cos down' to clear stale state, then 'cos up'";;
+    *)       die "box $id is '$(box_status "$id")' — cannot resume from that state";;
+  esac
+  box_resume_if_paused "$id"
+  echo "cos: $id running. Re-run 'cos sync' / 'cos tunnel' / 'cos expose' if you had them up." >&2
+}
+
+# ───────────────────────────── template: build a custom rootfs from a Dockerfile
+# Bake the toolchain once instead of reinstalling it on every offload. The build
+# service enforces constraints that are easy to trip and only surface as a 400
+# after upload, so preflight them locally and fail with the actual reason.
+template_validate(){
+  local f=$1 size froms copies
+  [ -f "$f" ] || die "no such Dockerfile: $f"
+  size=$(wc -c <"$f" | tr -d ' ')
+  [ "$size" -le 65536 ] || die "Dockerfile is ${size} bytes — the build service caps source at 64 KiB"
+  froms=$(grep -ciE '^[[:space:]]*FROM[[:space:]]' "$f" || true)
+  [ "$froms" = 1 ] || die "Dockerfile has $froms FROM line(s) — template builds are single-stage, exactly one FROM"
+  if grep -qE '^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]+.*\$' "$f"; then
+    die "FROM uses a variable — ARG-substituted base images are rejected; write the base image literally"
+  fi
+  copies=$(grep -ciE '^[[:space:]]*(COPY|ADD)[[:space:]]' "$f" || true)
+  [ "$copies" = 0 ] || die "Dockerfile has $copies COPY/ADD line(s) — no build context is uploaded, so they cannot work. Fetch what you need inside a RUN instead."
+  echo "cos: Dockerfile preflight ok — single-stage, no COPY/ADD, ${size}B" >&2
+  echo "cos: note — FROM must be an operator-allowlisted base (e.g. nodeops/sandbox:debian); the build rejects anything else." >&2
+}
+
+cmd_template(){
+  local action=${1:-}; shift || true
+  case "$action" in
+    submit|build|create)
+      local name="" file=Dockerfile; local -a pass=()
+      # -f/--file is consumed here so the Dockerfile can be preflighted; the rest passes through
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -f|--file) file=${2:?path required after -f}; shift 2;;
+          --file=*)  file=${1#*=}; shift;;
+          -*)        pass+=("$1"); shift;;
+          *)         if [ -n "$name" ]; then pass+=("$1"); else name=$1; fi; shift;;
+        esac
+      done
+      [ -n "$name" ] || die "usage: cos template submit <name> [-f Dockerfile]"
+      template_validate "$file"
+      echo "cos: submitting '$name' — build is async; logs stream below (2 concurrent builds per account)" >&2
+      # flags before the positional — urfave/cli stops flag parsing at the first
+      # positional arg, the same trap that bit `sandbox tunnel`
+      "$CLI" sandbox template submit -f "$file" ${pass[@]+"${pass[@]}"} "$name"
+      echo "cos: once status is 'ready', boot from it:  cos up -r $name   |   cos offload -r $name . '<cmd>'" >&2;;
+    ls|list)   "$CLI" sandbox template ls "$@";;
+    show|get)  "$CLI" sandbox template show "$@";;
+    logs)      "$CLI" sandbox template logs "$@";;
+    rm|delete) "$CLI" sandbox template rm "$@";;
+    *) die "usage: cos template submit <name> [-f Dockerfile] | ls | show <name> | logs [-f] <name> | rm <name>
+  A custom rootfs is slow on its FIRST boot per host (image fetch) and fast after.
+  Built-ins (devbox:1, ubuntu:26.04, debian:13, alpine:3.20) are kept warm — no pull.";;
+  esac
 }
 
 # ───────────────────────────── shell: instant throwaway interactive Linux (keyless)
@@ -768,12 +907,39 @@ cmd_install(){
     *) echo "cos: ⚠ $dir not on PATH — add: export PATH=\"$dir:\$PATH\"" >&2;; esac
 }
 
-# install needs no createos; auth needs the CLI but is itself the sign-in check
+main_usage(){ cat <<'EOF'
+cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on PATH)
+  cos auth                            check sign-in (CREATEOS_API_KEY, or `createos login` in a real terminal)
+  cos offload [flags] <dir> <cmd>     one-shot: stage→run(keepalive)→pull→destroy   (cos offload -h for flags)
+  cos fanout [-j N][flags] <dir> <cmd>...   run each <cmd> in its own throwaway box, in parallel  (cos fanout -h)
+  cos shell [-s][-r][-e|-p|-E]        instant throwaway interactive Linux (destroyed on exit)
+  cos up   [-s][-r][-n][-e|-p|-E][-a] create/reuse project box (-a adopt a box cos didn't create)
+  cos run  <cmd>                      run in project box (keepalive; ONE string, no '--' separator)
+  cos sync [-2|-M][-x glob] <dir> [remote]   file sync (default one-way, -2 two-way, -M mirror; big dirs excluded)
+  cos tunnel <remote> [local]         forward box port → 127.0.0.1 (background)
+  cos expose <port>                   public HTTPS URL for a box port  (unexpose to revoke)
+  cos cluster up <N> [-s|-r|-e|-p|-E] | run [<name|idx>|-a] <cmd> | ls | down    N boxes on one private net
+  cos disk create|ls|attach <disk> <mount>|detach|rm   BYO S3 bucket mounts
+  cos vpn [up|register [name]]        WireGuard L3 into your private networks (needs wg-quick)
+  cos fork                            snapshot project box → independent clone (survives down; -f reaps)
+  cos pause | cos resume              park the warm box at zero compute cost / bring it back
+  cos template submit <name> [-f Dockerfile] | ls | show | logs | rm    custom rootfs (bake the toolchain once)
+  cos down [-f]                       stop sync/tunnels + destroy box (+ cluster; -f also destroys forks)
+  cos status                          show active box + sync + tunnels + cluster
+
+One-shot work belongs in `offload` (auto-destroys), not `up`+`run` (box persists until `down`).
+egress: default = unrestricted (box reaches any host); restrict with -e <domain> or -p <preset>; -E forces unrestricted
+EOF
+}
+
+# install needs no createos; auth needs the CLI but is itself the sign-in check;
+# help must work when signed OUT, or a new user can't discover how to sign in.
 sub=${1:-}; shift || true
 case "$sub" in
-  install) :;;
-  auth)    ensure_cli;;
-  *)       ensure_cli; have jq || die "jq required"; ensure_auth;;
+  install)                 :;;
+  auth)                    ensure_cli;;
+  help|-h|--help|'')       main_usage; exit 0;;
+  *)                       ensure_cli; have jq || die "jq required"; ensure_auth;;
 esac
 case "$sub" in
   install)  cmd_install "$@";;
@@ -791,26 +957,10 @@ case "$sub" in
   disk)     cmd_disk "$@";;
   vpn)      cmd_vpn "$@";;
   fork)     cmd_fork "$@";;
+  pause)    cmd_pause "$@";;
+  resume)   cmd_resume "$@";;
+  template) cmd_template "$@";;
   down)     cmd_down "$@";;
   status)   cmd_status "$@";;
-  *) cat >&2 <<'EOF'
-cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on PATH)
-  cos auth                            check sign-in (CREATEOS_API_KEY, or `createos login` in a real terminal)
-  cos offload [flags] <dir> <cmd>     one-shot: stage→run(keepalive)→pull→destroy   (cos offload -h for flags)
-  cos fanout [-j N][flags] <dir> <cmd>...   run each <cmd> in its own throwaway box, in parallel  (cos fanout -h)
-  cos shell [-s][-r][-e|-p|-E]        instant throwaway interactive Linux (destroyed on exit)
-  cos up   [-s][-r][-n][-e|-p|-E][-a] create/reuse project box (-a adopt a box cos didn't create)
-  cos run  <cmd>                      run in project box (keepalive)
-  cos sync [-2|-M][-x glob] <dir> [remote]   file sync (default one-way, -2 two-way, -M mirror; big dirs excluded)
-  cos tunnel <remote> [local]         forward box port → 127.0.0.1 (background)
-  cos expose <port>                   public HTTPS URL for a box port  (unexpose to revoke)
-  cos cluster up <N> [-s|-r|-e|-p|-E] | run [<name|idx>|-a] <cmd> | ls | down    N boxes on one private net
-  cos disk create|ls|attach <disk> <mount>|detach|rm   BYO S3 bucket mounts
-  cos vpn [up|register [name]]        WireGuard L3 into your private networks (needs wg-quick)
-  cos fork                            snapshot project box → independent clone (survives down; -f reaps)
-  cos down [-f]                       stop sync/tunnels + destroy box (+ cluster; -f also destroys forks)
-  cos status                          show active box + sync + tunnels + cluster
-egress: default = unrestricted (box reaches any host); restrict with -e <domain> or -p <preset>; -E forces unrestricted
-EOF
-     exit 2;;
+  *) echo "cos: unknown subcommand '$sub'" >&2; main_usage >&2; exit 2;;
 esac
