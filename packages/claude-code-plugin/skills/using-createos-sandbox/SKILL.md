@@ -1,6 +1,6 @@
 ---
 name: using-createos-sandbox
-description: Use when you need to run code OFF the user's machine — heavy/long builds or test suites, untrusted or unknown code, a parallel test/config matrix across many boxes, an instant clean Linux to try a tool, a live dev-server/watcher Claude edits against, reaching a box-side service from localhost (port tunnel) or sharing it on the public web (HTTPS preview URL), a multi-machine cluster on one private network, a WireGuard VPN into that network, or mounting an S3 bucket of data. Offloads to ephemeral CreateOS Sandboxes via the `cos` helper (stage → exec → pull → auto-destroy), plus fanout, a scratch shell, and an opt-in reusable box with sync, tunnel, expose, cluster, disk, vpn, pause/resume, custom images, and snapshot/fork.
+description: Use when you need to run code OFF the user's machine — heavy/long builds or test suites, untrusted or unknown code, a parallel test/config matrix across many boxes, an instant clean Linux to try a tool, a live dev-server/watcher Claude edits against, reaching a box-side service from localhost (port tunnel) or sharing it on the public web (HTTPS preview URL), a multi-machine cluster on one private network, a WireGuard VPN into that network, mounting an S3 bucket of data, or work that needs a real screen — a graphical Linux desktop with a browser that you drive by screenshot/click/type and the user can watch over noVNC. Offloads to ephemeral CreateOS Sandboxes via the `cos` helper (stage → exec → pull → auto-destroy), plus fanout, a scratch shell, and an opt-in reusable box with sync, tunnel, expose, desktop/computer-use, cluster, disk, vpn, pause/resume, custom images, and snapshot/fork.
 ---
 
 # Using CreateOS Sandbox as remote compute
@@ -45,6 +45,7 @@ Every `cos` command except `install` and `auth` runs this check first, so an una
 | **Clean-room repro** — "works on my machine" bugs, dependency conflicts                        | Fresh rootfs every time, no host state.                                            |
 | **Live dev loop** — dev server / test watcher / REPL that reacts to edits                      | Project box + `sync`; Claude edits locally, the box reacts.                        |
 | **Reach a box-side service** — dev server, DB, API                                             | `tunnel` (private, to `127.0.0.1`) or `expose` (public HTTPS link to share).       |
+| **Needs a screen** — a real browser, a GUI app, or a desktop to click through                  | `desktop` — graphical box + noVNC URL; `computer` to drive it (screenshot/click/type). |
 | **Multi-machine** — distributed system, DB replication, p2p mesh, load test                    | `cluster up N` — boxes share one private net, reach each other by name.            |
 | **Same setup, many variants** — try N branches from one prepared box                           | `fork` the project box into independent clones.                                    |
 | **Repeated identical setup** — every offload starts with the same install prelude              | `template` — bake the toolchain into an image once.                                |
@@ -154,6 +155,32 @@ cos vpn register my-laptop && cos vpn up     # WireGuard L3 into the private net
 - **`cos vpn up` and `cos shell` block and need a real terminal** — hand them to the user (`!cos vpn up`) rather than launching them as agent commands.
 
 For the DNS names cluster members resolve each other by, and the rest of the expose/tunnel/VPN detail → **`references/networking.md`**.
+
+## Pattern D — a desktop, and driving it
+
+Some work needs a screen: a real (not headless) browser, a GUI app, or an install flow that only exists as a wizard. `cos desktop` puts the project box on the `desktop:1` rootfs — XFCE, Google Chrome, `xdotool`/`wmctrl`/`scrot`/`xclip` — and hands back a live noVNC URL.
+
+```bash
+cos desktop                          # desktop:1 box + ingress + noVNC URL (waits for the desktop to boot)
+cos computer screenshot              # PNG → prints a path; open it with the Read tool
+cos computer screen                  # {"width":1280,"height":800} — the coordinate space
+cos computer open https://example.com
+cos computer click 640 400
+cos computer type 'hello'
+cos computer key ctrl l              # a chord
+cos computer help                    # every op, plus `raw` for the rest of the API
+```
+
+The two halves are independent and useful together: the URL lets the **user** watch and take over in a browser, while `cos computer` lets **you** act. `desktop:1` also ships the Claude Code, Codex, Pi, OpenCode and Cursor CLIs, so "run an agent on a box and let the user watch the screen" needs no extra setup.
+
+Things that will bite you if you skip them:
+
+- **Take a screenshot before you click, and after.** You are driving blind otherwise — nothing in this API confirms that a click landed on what you meant.
+- **Coordinates are raw X11 pixels** of that screen, with no scaling or DPI translation anywhere. Read the bounds from `cos computer screen` rather than assuming 1280x800.
+- **The desktop boots after the box reports `running`.** `cos desktop` polls for readiness; a bare `cos up -r desktop:1` does not, and every computer call will fail until the stack is up.
+- **A `409` is ambiguous by design.** fc returns `desktop_unavailable` both while the desktop is still coming up and when an action fails on a perfectly healthy desktop, so never read it as "the box is broken".
+- **The noVNC link is a bearer URL** — anyone holding it can drive the desktop, and the token expires. Say so when handing it over, and don't paste it anywhere it will outlive the box.
+- This is the one place `cos` calls the CreateOS REST API directly, because the `createos` CLI has no computer or desktop command yet. Everything else still goes through the CLI.
 
 ## Scratch box and data disks
 

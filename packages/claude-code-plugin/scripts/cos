@@ -512,6 +512,227 @@ cmd_unexpose(){
   "$CLI" sandbox edit "$id" --ingress off >/dev/null 2>&1 && echo "cos: ingress disabled for $id" >&2 || die "failed to disable ingress"
 }
 
+# ══════════════════════════ desktop / computer use ════════════════════════════
+# `createos` has no computer or desktop command, so these two verbs are the only
+# place cos talks to the sandbox REST API directly instead of shelling out to the
+# CLI. Everything else in this script stays CLI-driven; when the CLI grows a
+# `sandbox computer` group, delete api()/api_auth() and shell out like the rest.
+#
+# Auth mirrors the CLI exactly: an api key goes in X-Api-Key, an OAuth JWT in
+# X-Access-Token. fc rejects Bearer on user-facing routes, and it rejects a JWT
+# sent under X-Api-Key ("invalid api key") — the two are not interchangeable.
+api_base(){ printf '%s' "${CREATEOS_SANDBOX_URL:-https://api.sb.createos.sh}"; }
+
+api_auth(){
+  # Precedence MUST match the CLI's (createos-cli cmd/root/root.go): an OAuth
+  # session wins, an api key is the fallback. Inverting it authenticates these
+  # direct calls as a different identity than every CLI-driven verb — and the
+  # symptom is a 404 on a box cos itself just created, which reads like the box
+  # is missing rather than like an auth mismatch.
+  local exp at
+  if [ -f "$CREATEOS_DIR/.oauth" ]; then
+    exp=$(jq -r '.expires_at // 0' "$CREATEOS_DIR/.oauth" 2>/dev/null || echo 0)
+    numeric "$exp" || exp=0
+    # cos deliberately does not implement OAuth refresh. The CLI already refreshes
+    # in its pre-flight and rewrites ~/.createos/.oauth, so poke it and re-read
+    # rather than carrying a second, subtly different refresh implementation.
+    if [ "$(date +%s)" -ge "$((exp - 60))" ]; then
+      "$CLI" -o json sandbox ls >/dev/null 2>&1 || true
+    fi
+    at=$(jq -r '.access_token // empty' "$CREATEOS_DIR/.oauth" 2>/dev/null || true)
+    [ -n "$at" ] && { printf 'X-Access-Token: %s' "$at"; return 0; }
+  fi
+  # NOTE: the CLI itself does NOT read CREATEOS_API_KEY (it has no such env var),
+  # so this branch works for these REST calls but not for any CLI-driven verb.
+  [ -n "${CREATEOS_API_KEY:-}" ] && { printf 'X-Api-Key: %s' "$CREATEOS_API_KEY"; return 0; }
+  [ -f "$CREATEOS_DIR/.token" ] && { printf 'X-Api-Key: %s' "$(tr -d '\r\n' <"$CREATEOS_DIR/.token")"; return 0; }
+  die "not signed in — run 'cos auth'"
+}
+
+# Map the computer API's error codes onto something actionable. Worth doing by
+# hand: `desktop_unavailable` is fc's catch-all for every X failure, so the raw
+# message alone never tells you whether the desktop is still booting or the
+# action itself failed on a live desktop.
+api_check(){ local code=$1 out=$2 what=$3 msg
+  case "$code" in 2??) return 0;; esac
+  msg=$(printf '%s' "$out" | jq -r '.message // .error // empty' 2>/dev/null || true)
+  case "$code" in
+    000) die "no response from $(api_base) — network down, or CREATEOS_SANDBOX_URL points somewhere wrong";;
+    401|403) die "auth rejected (HTTP $code). The API key or browser session is invalid or expired.
+  Ask the user to re-run 'createos login' in their own terminal, or export CREATEOS_API_KEY.";;
+    404) die "not found (HTTP 404): ${msg:-$what}
+  Either the box is gone, or it has no such screen — computer-use needs a desktop image ('cos desktop').";;
+    409) case "$msg" in
+           *ingress*) die "409: $msg — 'cos desktop' turns ingress on for you";;
+           *desktop_unavailable*|*) die "desktop did not answer (HTTP 409 ${msg:-desktop_unavailable}).
+  fc returns this both while the desktop is still booting AND when an action fails on a live desktop.
+  If the box just came up, 'cos desktop' waits for readiness — run that first.";;
+         esac;;
+    429) die "rate limited (429) — the control plane caps concurrent screenshots. Retry in a second.";;
+    501) die "501 desktop_tools_unavailable — this rootfs has no desktop tools installed. Recreate with: cos down && cos desktop";;
+    *) die "API error HTTP $code on $what${msg:+: $msg}";;
+  esac
+}
+
+# api <METHOD> <path> [json-body] → prints the response payload, unwrapped from
+# fc's JSend envelope. Callers pipe it through jq for the fields they want.
+api(){ local method=$1 path=$2 body=${3:-} hdr code out tmp
+  hdr=$(api_auth) || exit 1
+  tmp=$(mktemp)
+  local args=(-sS -X "$method" -H "$hdr" -o "$tmp" -w '%{http_code}' --max-time 60)
+  [ -n "$body" ] && args+=(-H 'Content-Type: application/json' -d "$body")
+  code=$(curl "${args[@]}" "$(api_base)$path" 2>/dev/null) || code=000
+  out=$(cat "$tmp"); rm -f "$tmp"
+  api_check "$code" "$out" "$method $path"
+  printf '%s' "$out" | jq -c '.data // .' 2>/dev/null || printf '%s' "$out"
+}
+
+# The desktop stack (Xvfb → XFCE → x11vnc → websockify) starts AFTER the box
+# reports `running`, so every computer call 404s or 409s for the first while.
+# Neither fc nor the SDK polls for this — every caller has to, so cos does it here.
+desktop_wait(){ local id=$1 screen=$2 to=${3:-120} hdr code i=0 said=0
+  hdr=$(api_auth) || exit 1
+  while [ "$i" -lt "$to" ]; do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -H "$hdr" \
+             "$(api_base)/v1/sandboxes/$id/computer/screen?screen_id=$screen" 2>/dev/null) || code=000
+    case "$code" in
+      2??) [ "$said" = 1 ] && echo "cos: desktop ready" >&2; return 0;;
+      401|403|501) api_check "$code" '' "desktop readiness";;
+    esac
+    [ "$said" = 0 ] && { echo "cos: waiting for the desktop stack to come up (up to ${to}s)…" >&2; said=1; }
+    sleep 2; i=$((i+2))
+  done
+  die "desktop did not come up within ${to}s on $id ($screen) — check: cos run 'pgrep -a Xvfb; pgrep -a websockify'"
+}
+
+# ───────────────────────────── desktop: graphical box + a live noVNC URL
+cmd_desktop(){
+  _norm "$@"; set -- ${NORMA[@]+"${NORMA[@]}"}
+  local shape=s-2vcpu-4gb screen=screen-0; local OPTIND=1 o
+  while getopts "s:S:h" o; do case $o in
+    s) shape=$OPTARG;; S) screen=$OPTARG;;
+    h) echo "cos desktop [-s shape] [-S screen-N]   desktop:1 box + ingress + live noVNC URL"; return 0;;
+    *) die "usage: cos desktop [-s shape] [-S screen-N]";; esac; done
+  shift $((OPTIND-1))
+
+  local id; id=$(state_get id)
+  if [ -z "$id" ] || ! box_live "$id"; then
+    # desktop:1 is heavier than devbox:1 (X + XFCE + Chrome), hence the bigger default shape.
+    cmd_up -s "$shape" -r desktop:1
+    id=$(state_get id); [ -n "$id" ] || die "box creation did not record an id"
+  else
+    box_resume_if_paused "$id"
+    # Never silently drive a non-desktop box: every computer call would 501 with
+    # a much less obvious message than saying so here.
+    local rf; rf=$("$CLI" -o json sandbox get "$id" 2>/dev/null | jq -r '.rootfs // empty')
+    case "$rf" in
+      *desktop*) :;;
+      *) die "project box $id runs '${rf:-unknown}', which has no desktop stack.
+  One project box per directory, so replace it:  cos down && cos desktop";;
+    esac
+  fi
+  wait_running "$id" 30 || die "box $id not running"
+
+  "$CLI" sandbox edit "$id" --ingress on >/dev/null 2>&1 || die "failed to enable ingress on $id"
+  desktop_wait "$id" "$screen"
+
+  local conn url exp
+  conn=$(api GET "/v1/sandboxes/$id/computer/screens/$screen/connect")
+  url=$(printf '%s' "$conn" | jq -r '.url // empty')
+  exp=$(printf '%s' "$conn" | jq -r '.expires_at // "?"')
+  [ -n "$url" ] || die "connect returned no URL — ingress is off on $id (fc only mints one when ingress is enabled)"
+  state_set desktop_screen "$screen"
+  {
+    echo "cos: desktop $screen on $id — open in a browser:"
+    echo "cos: ⚠ anyone with this link can drive the desktop. The token expires $exp, and re-running"
+    echo "cos:   'cos desktop' mints a fresh one (which invalidates this link for NEW connections)."
+  } >&2
+  echo "$url"
+}
+
+# ───────────────────────────── computer: drive that desktop from the agent side
+computer_usage(){ cat <<'EOF'
+cos computer <op>   drive the desktop in the project box (needs `cos desktop` first)
+  screenshot [-o file]     capture PNG (default: $STATE_DIR/screenshot.png), prints the path
+  screen                   screen geometry {width,height}
+  cursor                   cursor position {x,y}
+  move <x> <y>             move the pointer
+  click [<x> <y>]          click (optionally move there first)
+  type <text>              type a string
+  key <key>...             press a chord, e.g. cos computer key ctrl l
+  open <url|path>          open a target in the desktop browser
+  windows                  list windows on the screen
+  raw <METHOD> <path> [json]   any other computer endpoint (path relative to .../computer)
+Screen defaults to screen-0; override per call with COS_SCREEN=screen-N.
+Coordinates are raw X11 pixels of that screen — match them against `cos computer screen`.
+EOF
+}
+
+cmd_computer(){
+  local op=${1:-}; shift || true
+  case "$op" in ''|-h|--help|help) computer_usage; return 0;; esac
+  local id; id=$(state_get id)
+  [ -n "$id" ] || die "no active box — run 'cos desktop' first"
+  [ "$(box_status "$id")" = paused ] && die "box $id is paused — 'cos resume' first"
+  local screen=${COS_SCREEN:-$(state_get desktop_screen)}; screen=${screen:-screen-0}
+  local base="/v1/sandboxes/$id/computer" q="screen_id=$screen"
+
+  case "$op" in
+    screenshot)
+      local out="$STATE_DIR/screenshot.png" hdr code
+      [ "${1:-}" = "-o" ] && { out=${2:?-o needs a path}; shift 2; }
+      hdr=$(api_auth) || exit 1
+      # Screenshot is the one computer route that returns bytes, not JSON, so it
+      # bypasses api() entirely — the PNG is passed through from fc verbatim.
+      code=$(curl -sS -H "$hdr" -o "$out" -w '%{http_code}' --max-time 60 \
+               "$(api_base)$base/screenshot?$q" 2>/dev/null) || code=000
+      case "$code" in
+        2??) :;;
+        *) local body; body=$(cat "$out" 2>/dev/null || true); rm -f "$out"; api_check "$code" "$body" "screenshot";;
+      esac
+      echo "cos: screenshot → $out ($(wc -c <"$out" | tr -d ' ') bytes) — open it with the Read tool" >&2
+      echo "$out";;
+    screen)  api GET "$base/screen?$q";;
+    cursor)  api GET "$base/cursor?$q";;
+    windows) api GET "$base/windows?$q";;
+    move)
+      numeric "${1:-}" && numeric "${2:-}" || die "usage: cos computer move <x> <y>"
+      api POST "$base/mouse/move?$q" "$(jq -nc --argjson x "$1" --argjson y "$2" '{x:$x,y:$y}')" >/dev/null
+      echo "cos: moved to $1,$2" >&2;;
+    click)
+      if [ $# -ge 2 ]; then
+        numeric "$1" && numeric "$2" || die "usage: cos computer click [<x> <y>]"
+        api POST "$base/mouse/click?$q" "$(jq -nc --argjson x "$1" --argjson y "$2" '{x:$x,y:$y}')" >/dev/null
+        echo "cos: clicked $1,$2" >&2
+      else
+        api POST "$base/mouse/click?$q" '{}' >/dev/null
+        echo "cos: clicked at the current cursor position" >&2
+      fi;;
+    type)
+      [ $# -ge 1 ] || die "usage: cos computer type <text>"
+      # Unquoted multi-word text arrives as separate argv entries; join before
+      # sending so `cos computer type hello world` types the space too.
+      local text="$*"
+      api POST "$base/keyboard/type?$q" "$(jq -nc --arg t "$text" '{text:$t}')" >/dev/null
+      echo "cos: typed ${#text} chars" >&2;;
+    key)
+      [ $# -ge 1 ] || die "usage: cos computer key <key>...   e.g. cos computer key ctrl l"
+      api POST "$base/keyboard/press?$q" "$(jq -nc '{keys:$ARGS.positional}' --args "$@")" >/dev/null
+      echo "cos: pressed $*" >&2;;
+    open)
+      [ $# -ge 1 ] || die "usage: cos computer open <url|path>"
+      api POST "$base/open?$q" "$(jq -nc --arg t "$1" '{target:$t}')" >/dev/null
+      echo "cos: opened $1" >&2;;
+    raw)
+      # Escape hatch: cos wraps the handful of ops an agent loop actually needs,
+      # not all ~30 computer routes. Everything else goes through here.
+      local m=${1:?usage: cos computer raw <METHOD> <path> [json]} p=${2:?path required}; shift 2
+      case "$p" in /*) :;; *) p="$base/$p";; esac
+      api "$m" "$p" "${1:-}";;
+    *) die "unknown computer op '$op' — run 'cos computer help'";;
+  esac
+}
+
 # ───────────────────────────── cluster: N boxes on one private network (by-name DNS)
 cluster_ls(){
   local net; net=$(state_get cluster_net); [ -n "$net" ] || { echo "cos: no cluster for this project"; return 0; }
@@ -937,6 +1158,8 @@ cos — CreateOS sandbox as remote compute.  (run `cos install` to put `cos` on 
   cos sync [-2|-M][-x glob] <dir> [remote]   file sync (default one-way, -2 two-way, -M mirror; big dirs excluded)
   cos tunnel <remote> [local]         forward box port → 127.0.0.1 (background)
   cos expose <port>                   public HTTPS URL for a box port  (unexpose to revoke)
+  cos desktop [-s shape][-S screen]   graphical box (desktop:1) + live noVNC URL for a human to watch/drive
+  cos computer <op>                   drive that desktop: screenshot|click|type|key|open|...  (cos computer help)
   cos cluster up <N> [-s|-r|-e|-p|-E] | run [<name|idx>|-a] <cmd> | ls | down    N boxes on one private net
   cos disk create|ls|attach <disk> <mount>|detach|rm   BYO S3 bucket mounts
   cos vpn [up|register [name]]        WireGuard L3 into your private networks (needs wg-quick)
@@ -972,6 +1195,8 @@ case "$sub" in
   tunnel)   cmd_tunnel "$@";;
   expose)   cmd_expose "$@";;
   unexpose) cmd_unexpose "$@";;
+  desktop)  cmd_desktop "$@";;
+  computer) cmd_computer "$@";;
   cluster)  cmd_cluster "$@";;
   disk)     cmd_disk "$@";;
   vpn)      cmd_vpn "$@";;
