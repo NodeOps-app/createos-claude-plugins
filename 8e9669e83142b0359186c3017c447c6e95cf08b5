@@ -1,0 +1,62 @@
+Session context — desktop / computer-use for claude-code-plugin
+
+## Origin
+Traced the feature across the mesh before writing anything:
+- fc@300c5ae "feat: computer api (#557)", 25 Aug 2026. One squashed PR,
+  ~4k lines: images/desktop:1/*, internal/agent/computer/*,
+  internal/control/handlers/computer.go, internal/hosts/api/computer.go,
+  openapi.yaml, bench/e2e_computer.py (the de-facto spec).
+- SDK: full `sandbox.computer` namespace in v0.8.1, zero tests, no
+  CHANGELOG entry, no reference page. Example 55 is the only consumer.
+- CLI, public docs, and all plugins: nothing.
+
+## How it works (as verified, not as assumed)
+desktop:1 = Ubuntu 24.04 + Xvfb + XFCE + x11vnc + noVNC/websockify +
+xdotool/wmctrl/scrot/xclip + Chrome, and the Claude Code, Codex, Pi,
+OpenCode and Cursor CLIs. Per screen: Xvfb :N, XFCE, x11vnc on 5900+N
+(-localhost -nopw), websockify on 6080+N with a TokenFile map.
+
+Request path: control plane -> host agent-api (mTLS) -> guest agent on
+the box IP:1028 behind an AUTH preface line -> argv exec of xdotool et
+al with DISPLAY=:N. Not vsock; 1028 is the same channel exec/files use.
+
+noVNC auth is a 64-hex bearer in the URL query, 1h TTL, rotated on every
+connect. x11vnc is -nopw but -localhost, so that token is the only gate.
+Ports 5900-5907 are refused by the tunnel path so raw RFB can't bypass
+it. The websocket rides the generic ingress reverse proxy — there is no
+VNC-specific component anywhere.
+
+## Decisions
+- Scope: both halves (human-facing URL + agent-facing computer use),
+  chosen by the user over docs-only or either half alone.
+- Dropped a first design that read the screen token out of
+  /var/lib/fcspawn/computer-screens/screen-0.conf via `sandbox exec` and
+  rebuilt the URL from ingress_url_template. Once the HTTP layer existed
+  for computer-use, GET .../screens/screen-0/connect returns a complete
+  `url` — that deleted the exec, the file parsing and the string
+  building.
+- Wrapped ~10 ops rather than all ~30 routes; `raw` covers the rest.
+- No test file: the repo has no test harness, and the logic is HTTP
+  plumbing that needs a live box. Adding bats for this would be the
+  over-engineering the repo's own guidance cuts.
+
+## Bugs found
+- Mine, fixed before commit: api_auth() preferred an api key while the
+  CLI prefers an OAuth session. With both credentials on disk the two
+  paths can authenticate as different identities.
+- Pre-existing, NOT fixed here: cos tells users to export
+  CREATEOS_API_KEY and `cos auth` reports "signed in via
+  CREATEOS_API_KEY", but that env var appears nowhere in createos-cli.
+  A user with only that set passes the preflight, then every CLI-driven
+  verb fails "you're not signed in". Needs a decision: add the env var
+  to the CLI, or drop the claim from cos.
+
+## Upstream gaps worth issues (fc-origin, per the mesh protocol)
+- No desktop-readiness signal. Three clients now hand-roll the same
+  poll: SDK example 55, this driver, and any future CLI.
+- 409 desktop_unavailable conflates "still booting" with "the action
+  failed on a live desktop". No client can disambiguate it.
+- Public docs have no /computer REST page and no SDK reference entry.
+
+Live verification used a real box which was destroyed afterwards. No
+credentials or noVNC tokens recorded here.
