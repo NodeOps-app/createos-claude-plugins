@@ -4,7 +4,7 @@
 
 **Run ad-hoc, heavy, or untrusted code off your machine — from inside Claude Code.**
 
-A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 18 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Sandboxes — roughly 200 ms from create to your first command — that self-destruct when done.
+A [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin that gives Claude a skill + 20 slash commands driving the authed [`createos`](https://createos.sh) CLI. Work runs in disposable [CreateOS](https://createos.sh) Sandboxes — roughly 200 ms from create to your first command — that self-destruct when done.
 
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-6E56CF)](https://docs.claude.com/en/docs/claude-code)
 [![CreateOS](https://img.shields.io/badge/CreateOS-Sandboxes-0EA5E9)](https://createos.sh)
@@ -69,7 +69,7 @@ The plugin is a **thin Claude-facing surface** over the `createos` CLI. It ships
 
 | Piece              | Path                                                     | Role                                                                                                        |
 | ------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **Slash commands** | `commands/*.md`                                          | 18 commands (`offload`, `fanout`, `shell`, …), each a thin wrapper that calls `scripts/cos`                 |
+| **Slash commands** | `commands/*.md`                                          | 20 commands (`offload`, `fanout`, `shell`, …), each a thin wrapper that calls `scripts/cos`                 |
 | **Skill**          | `skills/using-createos-sandbox/SKILL.md` + `references/` | teaches Claude _when_ to reach for the sandbox on its own, with depth loaded on demand                      |
 | **Hooks**          | `hooks/hooks.json` + `scripts/`                          | `SessionStart` publishes the driver's absolute path; `PreToolUse(Bash)` nudges on heavy build/test commands |
 | **Driver**         | `scripts/cos`                                            | the actual logic — staging, egress, keepalive, sync, networking, lifecycle, state                           |
@@ -132,6 +132,8 @@ claude --plugin-dir /path/to/createos-claude-plugins/packages/claude-code-plugin
 | [`tunnel`](#networking) `<remote> [local]`                                                                | forward a box port to `127.0.0.1` (private)                         |
 | [`expose`](#networking) `<port>`                                                                          | public HTTPS URL for a box port                                     |
 | [`unexpose`](#networking)                                                                                 | revoke the public URL / disable ingress                             |
+| [`desktop`](#desktop-and-computer-use) `[-s shape] [-S screen-N]`                                         | graphical `desktop:1` box + a live noVNC URL                        |
+| [`computer`](#desktop-and-computer-use) `<op>`                                                            | drive that desktop — screenshot, click, type, key, open, windows    |
 | [`cluster`](#networking) `up <N> \| run […] <cmd> \| ls \| down`                                          | N boxes on one private network, name-addressable                    |
 | [`disk`](#disks--byo-s3) `create \| ls \| show \| attach \| detach \| rm`                                 | BYO S3 bucket mounts on the project box                             |
 | [`vpn`](#networking) `[register <name> \| up]`                                                            | WireGuard L3 into your private networks                             |
@@ -235,6 +237,39 @@ A **reusable, per-repo** box addressed by your working directory. `up` creates i
 | **`cluster up <N>`**                        | N boxes on one private network, reaching each other by **fully-qualified** name (`curl http://cos-cl-<key>-2.fc.local:8080` — the bare short name is NXDOMAIN). `cluster run -a '<cmd>'` fans a command across all; `cluster run <name\|idx> '<cmd>'` targets one. `cluster ls` / `cluster down` manage them. For distributed-system / DB-replication / p2p / load-test repros. **Counts against quota — keep N small.** |
 | **`vpn register <name>`** then **`vpn up`** | Join your laptop to the whole private network over WireGuard (reach every sandbox by name/IP). `vpn up` needs `wg-quick` + `sudo` and **blocks until Ctrl-C** — run it in your own terminal (`!cos vpn up`).                                                                                                                                                                                                             |
 | **`fork`**                                  | Snapshot the warm project box → an independent clone for matrix/parallel experiments. The fork is self-managed.                                                                                                                                                                                                                                                                                                          |
+
+### Desktop and computer use
+
+Some work needs a screen — a real (not headless) browser, a GUI app, an installer that only exists as a wizard. `desktop` puts the project box on the `desktop:1` rootfs (XFCE, Google Chrome, `xdotool`/`wmctrl`/`scrot`/`xclip`) and hands back a live noVNC URL; `computer` drives that same desktop from the agent side.
+
+```bash
+cos desktop                          # desktop:1 box + ingress + noVNC URL (waits for the desktop to boot)
+cos computer screen                  # {"width":1280,"height":800} — the coordinate space
+cos computer screenshot              # PNG → prints a path (Claude opens it with Read)
+cos computer open https://example.com
+cos computer click 640 400
+cos computer type 'hello'
+cos computer key ctrl l              # a chord
+cos computer help                    # every op, plus `raw` for the rest of the API
+```
+
+The two halves compose: the URL lets **you** watch and take over in a browser while Claude acts through `computer`. `desktop:1` also ships the Claude Code, Codex, Pi, OpenCode and Cursor CLIs, so "run an agent on a box and watch its screen" needs no extra setup.
+
+| Gotcha                     | Detail                                                                                                                                                                     |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The link is a bearer**   | Anyone holding the noVNC URL can drive the desktop, and its token expires (the command prints when). Re-running `desktop` mints a fresh one and invalidates the old link for new connections. |
+| **Boots late**             | The desktop stack starts *after* the box reports `running`. `cos desktop` polls for readiness; a bare `cos up -r desktop:1` does not.                                        |
+| **`409` is ambiguous**     | The control plane returns `desktop_unavailable` both while the desktop is coming up and when an action fails on a live desktop. Not a signal that the box is broken.         |
+| **Raw pixels**             | Coordinates are unscaled X11 pixels of that screen. Read the bounds from `cos computer screen`.                                                                              |
+| **Needs ingress**          | `desktop` enables it for you. `unexpose` turns it off and kills the link.                                                                                                    |
+
+> `desktop` and `computer` are the only `cos` commands that call the CreateOS REST API directly — the `createos` CLI has no computer or desktop command yet. Everything else shells out to the CLI as usual. Auth is reused as-is: `CREATEOS_API_KEY` or `~/.createos/.token` go out as `X-Api-Key`, a browser session's JWT as `X-Access-Token`.
+
+```
+/createos-sandbox:desktop  [-s shape] [-S screen-N]
+/createos-sandbox:computer screenshot | screen | cursor | move <x> <y> | click [<x> <y>]
+                           | type <text> | key <k>… | open <url> | windows | raw <M> <path> [json]
+```
 
 ### Pause, resume, and custom images
 
@@ -359,6 +394,8 @@ cos fanout -j 2 -p python-uv . 'pytest tests/a' 'pytest tests/b'   # parallel, i
 cos shell                                            # instant throwaway Linux (destroyed on exit)
 cos run 'npm run dev &' && cos tunnel 3000           # dev server → http://127.0.0.1:3000
 cos expose 8080                                      # public HTTPS URL for port 8080
+cos desktop && cos computer open https://example.com # graphical box + noVNC URL, then drive it
+cos computer screenshot                              # PNG of the desktop → prints a path
 cos cluster up 3 && cos cluster run -a 'hostname'    # 3 boxes, one private net
 cos disk create data --bucket my-b --endpoint https://s3.amazonaws.com --access-key … --secret-key …
 cos disk attach data /mnt/data                       # mount S3 into the project box
