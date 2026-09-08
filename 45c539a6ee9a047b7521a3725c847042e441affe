@@ -1,0 +1,1 @@
+Pi extension: added startup project and loaded-skill mirroring, Git-ignore-aware one-time sync, and --createos-* flags. Validated with Bun tests, typecheck, help output, and review. No credentials, settings, sessions, or Git metadata are mirrored.
