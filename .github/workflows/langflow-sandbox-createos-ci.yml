@@ -1,0 +1,126 @@
+name: langflow-sandbox-createos CI
+
+# Lint and unit-test the one Python package in this repo. Path-filtered so the
+# TypeScript packages never trigger a Python job and vice versa.
+#
+# These tests use httpx.MockTransport against a recorded fake control plane —
+# no CreateOS credential, no live sandbox, nothing to leak. The tests that need
+# a real control plane are run by hand and are not part of this workflow; a
+# green run here means the wiring is sound, not that the platform behaved.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/langflow-sandbox-createos/**"
+      - ".github/workflows/langflow-sandbox-createos-ci.yml"
+  pull_request:
+    paths:
+      - "packages/langflow-sandbox-createos/**"
+      - ".github/workflows/langflow-sandbox-createos-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: packages/langflow-sandbox-createos
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from `requires-python`, and the version we develop against.
+        # Testing the floor is the point: lfx supports 3.10-3.14 and a 3.12-only
+        # syntax slip would otherwise ship.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Create the environment
+        run: |
+          uv venv --python ${{ matrix.python-version }} .venv
+          uv pip install --python .venv/bin/python -e . pytest
+
+      - name: Lint
+        run: |
+          uvx ruff check src tests
+          uvx ruff format --check src tests
+
+      - name: Unit tests
+        env:
+          # The tests assert on redaction and on fail-closed behaviour, so a
+          # key must be present — a deliberately fake one.
+          CREATEOS_SANDBOX_API_KEY: ci-not-a-real-key
+        run: .venv/bin/python -m pytest tests/ -q
+
+      - name: Entry points resolve
+        # A wheel that builds but registers nothing is the failure mode that
+        # already bit us once: a stray force-include silently produced a
+        # package with no entry points and no components directory.
+        run: |
+          .venv/bin/python - <<'PY'
+          import importlib.metadata as m
+
+          groups = {
+              "lfx.sandbox_backends": "createos",
+              "langflow.extensions": "langflow-sandbox-createos",
+              "lfx.executors": "createos",
+          }
+          eps = m.entry_points()
+          for group, name in groups.items():
+              names = [e.name for e in eps.select(group=group)]
+              assert name in names, f"{name!r} missing from {group}: {names}"
+              print(f"ok  {group} -> {name}")
+
+          from langflow_sandbox_createos import create_backend
+          from langflow_sandbox_createos.components.createos import CreateOSSandboxComponent
+          from langflow_sandbox_createos.executor import CreateOSExecutor
+
+          assert create_backend().capabilities().isolation == "hardware-virtualized"
+          assert CreateOSSandboxComponent.display_name == "CreateOS Sandbox"
+          assert CreateOSExecutor.kind == "createos"
+
+          import pathlib
+          import langflow_sandbox_createos as pkg
+
+          manifest = pathlib.Path(pkg.__file__).parent / "extension.json"
+          assert manifest.exists(), "extension.json missing from the installed package"
+          print("ok  manifest ships")
+          PY
+
+  build:
+    # Proves the sdist and wheel are publishable on every PR, so a packaging
+    # mistake surfaces here rather than at tag time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      - name: Check metadata
+        run: |
+          uvx twine check dist/*
+          uvx --from check-wheel-contents check-wheel-contents dist/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-preview
+          path: packages/langflow-sandbox-createos/dist/
+          retention-days: 7

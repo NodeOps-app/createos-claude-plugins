@@ -1,0 +1,53 @@
+[project]
+name = "langflow-sandbox-createos"
+version = "0.2.0"
+description = "CreateOS Firecracker microVM sandbox backend for Langflow"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["langflow", "lfx", "sandbox", "createos", "firecracker"]
+dependencies = [
+    # Capabilities/SandboxResult are concrete dataclasses the lfx dispatcher
+    # constructs and reads, so this is a real coupling, not duck typing.
+    "lfx>=1.12",
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://createos.sh"
+Source = "https://github.com/NodeOps-app/createos-plugin"
+
+# The entry-point NAME is the value operators put in both
+# LANGFLOW_SANDBOX_BACKEND and LANGFLOW_SANDBOX_BACKEND_PLUGINS.
+[project.entry-points."lfx.sandbox_backends"]
+createos = "langflow_sandbox_createos:create_backend"
+
+# Components. Unlike the backend above this group is auto-imported by Langflow;
+# the components are inert until someone drags one onto a canvas.
+[project.entry-points."langflow.extensions"]
+langflow-sandbox-createos = "langflow_sandbox_createos"
+
+# Whole-flow remote execution. Selected with LANGFLOW_EXECUTOR_KIND=createos.
+# Covers the /api/v1/run path, the lfx CLI and Loop subgraphs — NOT the UI
+# build endpoint, which walks vertices itself.
+[project.entry-points."lfx.executors"]
+createos = "langflow_sandbox_createos.executor:CreateOSExecutor"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langflow_sandbox_createos"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint.per-file-ignores]
+# Langflow components declare `inputs`/`outputs` as class-level lists. That is
+# the framework's own convention, not an accident.
+"src/langflow_sandbox_createos/components/**" = ["RUF012"]
