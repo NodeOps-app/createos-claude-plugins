@@ -15,7 +15,7 @@
     "fix": "oxlint --fix && oxfmt --write"
   },
   "devDependencies": {
-    "oxfmt": "^0.63.0",
+    "oxfmt": "^0.66.0",
     "oxlint": "^1.77.0"
   },
   "peerDependencies": {
