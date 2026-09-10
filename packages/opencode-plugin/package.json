@@ -1,13 +1,13 @@
 {
   "name": "@createos/opencode",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenCode plugin that runs all tool calls inside a remote CreateOS Sandbox",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NodeOps-app/createos-claude-plugins.git",
+    "url": "git+https://github.com/NodeOps-app/createos-plugin.git",
     "directory": "packages/opencode-plugin"
   },
   "author": "CreateOS",
