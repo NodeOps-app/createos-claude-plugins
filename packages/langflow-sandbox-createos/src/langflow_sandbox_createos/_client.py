@@ -19,6 +19,7 @@ state — a component instance is per-run, so pooling would buy nothing.
 from __future__ import annotations
 
 import os
+import time
 
 import httpx
 from lfx.utils.sandbox.base import SandboxExecutionError, SandboxUnavailableError
@@ -29,6 +30,12 @@ DEFAULT_ROOTFS = "devbox:1"
 # Control-plane calls are not the user's code, so they get a fixed budget.
 CONTROL_TIMEOUT_SECONDS = 60
 CONNECT_TIMEOUT_SECONDS = 10
+
+# Resuming a paused guest is snapshot restore, not a boot: measured at a few
+# seconds. The ceiling is generous so a slow restore fails the run loudly
+# rather than being mistaken for a hang.
+RESUME_TIMEOUT_SECONDS = 90
+RESUME_POLL_SECONDS = 1.0
 
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
@@ -182,6 +189,25 @@ class SandboxClient:
     def get(self, sandbox_id: str) -> dict:
         """Fetch a sandbox record."""
         return unwrap(self._http.get(f"/v1/sandboxes/{sandbox_id}"))
+
+    def resume(self, sandbox_id: str, *, timeout_seconds: float = RESUME_TIMEOUT_SECONDS) -> dict:
+        """Wake a paused sandbox and wait until it can accept work.
+
+        ``find_by_name`` adopts paused sandboxes deliberately -- a guest that
+        idled out between two runs is exactly the one reuse wants back. But the
+        control plane refuses exec and file access on a paused sandbox with a
+        409, and ``resume`` returns while it is still ``resuming``, so the wait
+        belongs here rather than at every call site.
+        """
+        record = unwrap(self._http.post(f"/v1/sandboxes/{sandbox_id}/resume"))
+        deadline = time.monotonic() + timeout_seconds
+        while (record.get("status") or "") != "running":
+            if time.monotonic() >= deadline:
+                msg = f"CreateOS sandbox {sandbox_id} did not resume within {timeout_seconds:.0f}s"
+                raise SandboxExecutionError(msg)
+            time.sleep(RESUME_POLL_SECONDS)
+            record = self.get(sandbox_id)
+        return record
 
     def destroy(self, sandbox_id: str) -> None:
         """Best-effort teardown. Never raises — callers use it in a finally."""

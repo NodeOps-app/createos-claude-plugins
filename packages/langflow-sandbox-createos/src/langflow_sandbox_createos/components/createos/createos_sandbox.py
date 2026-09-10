@@ -207,7 +207,7 @@ class CreateOSSandboxComponent(Component):
             existing = client.find_by_name(name)
             if existing and self._policy_matches(existing):
                 self.log(f"Reusing guest {existing['id']} ({existing.get('status')})")
-                return str(existing["id"]), False
+                return self._wake(client, existing), False
             if existing:
                 # Belt to the name's braces: the name already encodes the policy,
                 # so reaching here means the guest's egress drifted after
@@ -236,8 +236,23 @@ class CreateOSSandboxComponent(Component):
             existing = client.find_by_name(name)
             if not existing or not self._policy_matches(existing):
                 raise
-            return str(existing["id"]), False
+            return self._wake(client, existing), False
         return str(created["id"]), True
+
+    def _wake(self, client: SandboxClient, record: dict) -> str:
+        """Return an adopted guest's id, resuming it first if it idled out.
+
+        Guests carry an auto-pause just above this component's own timeout, so
+        any gap between two runs longer than that leaves the guest paused --
+        which is the normal case for reuse, not an edge case. The control plane
+        then rejects exec and file access with a 409, so the wake has to happen
+        before the run, not be discovered by it.
+        """
+        sandbox_id = str(record["id"])
+        if record.get("status") == "paused":
+            self.log(f"Resuming paused guest {sandbox_id}")
+            client.resume(sandbox_id)
+        return sandbox_id
 
     def _guest_command(self, client: SandboxClient, sandbox_id: str) -> tuple[str, list[str]]:
         """Upload the program if needed and return the argv to run."""

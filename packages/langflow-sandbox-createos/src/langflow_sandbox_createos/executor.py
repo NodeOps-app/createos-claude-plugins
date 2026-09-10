@@ -117,6 +117,30 @@ async def main():
 
     async for item in graph.async_start(inputs=inputs or None, **kwargs):
         emit({"t": "step", "event": describe(item)})
+
+    # Final outputs, harvested exactly the way Graph._run does. Graph.arun --
+    # and so /api/v1/run, the lfx CLI and Loop -- reads RunComplete.outputs, so
+    # without this frame every API caller gets outputs: [] no matter what the
+    # flow produced. Streaming components are NOT drained here (Graph._run does
+    # that via consume_async_generator when stream is off); a flow whose output
+    # is a live generator will report an empty result.
+    wanted = opts.get("outputs") or []
+    collected = []
+    for vertex in graph.vertices:
+        if not getattr(vertex, "built", False):
+            continue
+        if (not wanted and getattr(vertex, "is_output", False)) \
+           or getattr(vertex, "display_name", None) in wanted or vertex.id in wanted:
+            collected.append(vertex.result)
+
+    from lfx.graph.schema import RunOutputs
+    run_outputs = RunOutputs(inputs=inputs[0] if inputs else {}, outputs=collected)
+    try:
+        dumped = run_outputs.model_dump(mode="json")
+    except Exception:
+        # emit() stringifies what json cannot carry; a degraded result beats none.
+        dumped = run_outputs.model_dump()
+    emit({"t": "outputs", "run_outputs": [dumped]})
     emit({"t": "done"})
 
 try:
@@ -149,6 +173,7 @@ class CreateOSExecutor(Executor):
             result = await asyncio.to_thread(_run, client, sandbox_id)
 
             fatal: dict[str, Any] | None = None
+            run_outputs: list[Any] = []
             for line in (result.get("stdout") or "").splitlines():
                 line = line.strip()
                 if not line:
@@ -165,6 +190,9 @@ class CreateOSExecutor(Executor):
                     fatal = record
                     continue
                 if record.get("t") == "done":
+                    continue
+                if record.get("t") == "outputs":
+                    run_outputs = _rebuild_outputs(record.get("run_outputs") or [])
                     continue
                 yield StepResult(payload=record)
 
@@ -184,10 +212,29 @@ class CreateOSExecutor(Executor):
                 await asyncio.to_thread(client.destroy, sandbox_id)
             await asyncio.to_thread(client.close)
 
-        yield RunComplete(outputs=[])
+        yield RunComplete(outputs=run_outputs)
 
 
 # -- helpers, all synchronous so they can be pushed to a thread ---------------
+
+
+def _rebuild_outputs(raw: list[Any]) -> list[Any]:
+    """Rebuild the guest's JSON back into ``RunOutputs`` objects.
+
+    A row that will not validate is kept as the raw dict rather than dropped:
+    a caller inspecting the payload is better served by unshaped data than by
+    an empty list that looks like "the flow produced nothing".
+    """
+    from lfx.graph.schema import RunOutputs
+
+    rebuilt: list[Any] = []
+    for row in raw:
+        try:
+            rebuilt.append(RunOutputs.model_validate(row))
+        except (TypeError, ValueError) as exc:
+            logger.warning("createos executor could not rebuild RunOutputs: %s", exc)
+            rebuilt.append(row)
+    return rebuilt
 
 
 def _serialize(unit: Unit) -> dict[str, Any]:

@@ -405,3 +405,99 @@ def test_executor_never_ships_host_only_or_unserializable_options():
     )
     assert spec["runtime_options"] == {"max_iterations": 7, "fallback_to_env_vars": True}
     json.dumps(spec)  # the whole spec must survive the wire
+
+
+def test_executor_returns_the_guest_run_outputs_to_api_callers(monkeypatch):
+    """Graph.arun -- and so /api/v1/run -- reads RunComplete.outputs.
+
+    The executor streamed per-vertex events but terminated with
+    RunComplete(outputs=[]), so every API run returned `outputs: []` however
+    much the flow produced. Verified live against a real control plane: the
+    same flow returned full results with the executor off and nothing with it
+    on. The guest's final `outputs` frame must survive as RunOutputs.
+    """
+    import asyncio
+
+    from lfx.execution.types import RunComplete, Unit
+
+    from langflow_sandbox_createos import executor as ex
+
+    stdout = "\n".join(
+        json.dumps(frame)
+        for frame in (
+            {"t": "step", "event": {"type": "Vertex", "vertex_id": "ChatOutput-1"}},
+            {"t": "outputs", "run_outputs": [{"inputs": {"input_value": "go"}, "outputs": []}]},
+            {"t": "done"},
+        )
+    )
+
+    monkeypatch.setattr(ex, "SandboxClient", lambda *_a, **_k: types.SimpleNamespace(
+        destroy=lambda *_: None, close=lambda: None))
+    monkeypatch.setattr(ex, "_provision", lambda _client: "sb-test")
+    monkeypatch.setattr(ex, "_stage", lambda *_a, **_k: None)
+    monkeypatch.setattr(ex, "_run", lambda *_a, **_k: {"stdout": stdout, "exit_code": 0})
+
+    async def drain():
+        unit = Unit(graph={"data": {"nodes": [], "edges": []}}, inputs=[])
+        return [item async for item in ex.CreateOSExecutor().execute(unit)]
+
+    items = asyncio.run(drain())
+
+    terminal = items[-1]
+    assert isinstance(terminal, RunComplete), "the stream must end with RunComplete"
+    assert len(terminal.outputs) == 1, "the guest's outputs frame must reach the caller"
+    assert terminal.outputs[0].inputs == {"input_value": "go"}
+
+    # The outputs frame is terminal bookkeeping, not a mid-run event.
+    assert all(getattr(i, "payload", {}).get("t") != "outputs" for i in items[:-1])
+
+
+def test_resume_waits_for_a_paused_guest_to_come_back(monkeypatch):
+    """A resumed sandbox is not immediately usable.
+
+    find_by_name adopts paused guests on purpose, but the control plane rejects
+    exec and file access on one with `409 sandbox is paused; resume it before
+    accessing files` -- seen live, mid-demo, on the second run of a reuse flow.
+    `resume` returns while the guest is still "resuming", so the client must
+    wait for "running" before handing the id back.
+    """
+    monkeypatch.setenv("CREATEOS_SANDBOX_API_KEY", "test-key")
+
+    from langflow_sandbox_createos._client import SandboxClient
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        if request.method == "POST":
+            body = {"id": "sb-1", "status": "resuming"}
+        else:
+            # Still waking on the first poll, up on the second.
+            polls = sum(1 for s in seen if s.startswith("GET"))
+            body = {"id": "sb-1", "status": "running" if polls > 1 else "resuming"}
+        return httpx.Response(200, json={"status": "success", "data": body})
+
+    client = SandboxClient()
+    client._http = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.test")
+
+    record = client.resume("sb-1", timeout_seconds=10)
+
+    assert record["status"] == "running", "must not return a still-resuming guest"
+    assert seen[0] == "POST /v1/sandboxes/sb-1/resume"
+    assert any(s.startswith("GET") for s in seen), "must poll until the guest is running"
+
+
+def test_resume_gives_up_rather_than_hanging(monkeypatch):
+    """A guest that never comes back must fail the run, not block it forever."""
+    from langflow_sandbox_createos._client import SandboxClient
+
+    monkeypatch.setenv("CREATEOS_SANDBOX_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "success", "data": {"id": "sb-1", "status": "resuming"}})
+
+    client = SandboxClient()
+    client._http = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.test")
+
+    with pytest.raises(Exception, match="did not resume"):
+        client.resume("sb-1", timeout_seconds=0)

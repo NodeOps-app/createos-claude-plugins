@@ -41,6 +41,14 @@ control plane rather than read from docs:
   rotates and CDN addresses are shared.
 - **Langflow's UI build endpoint does not use the executor seam.** It walks
   vertices itself, so `LANGFLOW_EXECUTOR_KIND` never affects the playground.
+- **`/api/v1/run` reads `RunComplete.outputs` and nothing else.** `Graph.arun`
+  goes through `Coordinator.run_to_completion`, which returns only that terminal
+  field — the `StepResult` payload stream is never consulted. An executor that
+  terminates with `RunComplete(outputs=[])` therefore returns `outputs: []` to
+  every API caller while still running the flow correctly; measured live as
+  2.9 s with full results (executor off) versus 21 s and nothing (executor on).
+  The guest harvests its own vertices like `Graph._run` and ships `RunOutputs`
+  back. Do not "simplify" that back to an empty terminal envelope.
 
 Never name a component input `code`: Langflow reserves `template["code"]` for a
 component's own source, and an input by that name silently replaces it.

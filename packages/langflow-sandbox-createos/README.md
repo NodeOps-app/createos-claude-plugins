@@ -156,6 +156,12 @@ Three things to know before you turn reuse on:
 - A reused guest **outlives the flow run** by design. `auto_pause` bounds the
   cost but does not delete it — reap `lf-c-*` sandboxes on whatever schedule
   suits you.
+- **A guest that idled out is resumed, not adopted paused.** `auto_pause` sits
+  just above this component's timeout, so any gap between runs longer than that
+  leaves the guest paused — the normal case for reuse, not an edge case. The
+  control plane rejects exec and file access on a paused sandbox with
+  `409 sandbox is paused; resume it before accessing files`, so the component
+  resumes it and waits for `running` before the run starts.
 - Two workers running the same flow concurrently adopt the **same** guest and
   share its filesystem. That is inherent to "reuse one machine", and it is why
   reuse is off by default.
@@ -201,6 +207,17 @@ normalizes the two. `max_iterations`, `config`, `reset_output_values` and
 The seam allows executor-defined payloads and pushes normalization to the
 consumer, so anything reading payloads expecting in-process shapes needs
 adapting.
+
+**Final outputs come from `RunComplete.outputs`, not from the payload stream.**
+`Graph.arun` — and so `/api/v1/run` — reads only that terminal field, via
+`Coordinator.run_to_completion`. The guest therefore harvests its own vertices
+exactly the way `Graph._run` does (built vertices whose id or display name the
+caller asked for, or every `is_output` vertex when it asked for none) and ships
+the resulting `RunOutputs` back to be rebuilt on the host. Terminating with an
+empty list instead returns `outputs: []` to every API caller no matter what the
+flow produced. The exception is a component whose output is a live generator:
+`Graph._run` drains those with `consume_async_generator` and the guest does not,
+so it reports an empty result.
 
 ## What it does not do
 
