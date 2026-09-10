@@ -90,7 +90,7 @@ unless you pass `--force`. Undo the keys with `herdr config reset-keys`.
 ### By hand
 
 ```bash
-herdr plugin install NodeOps-app/createos-claude-plugins/packages/herdr-plugin
+herdr plugin install NodeOps-app/createos-plugin/packages/herdr-plugin
 ```
 
 For local development, link the directory and run the build step yourself.
