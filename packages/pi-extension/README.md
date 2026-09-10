@@ -7,7 +7,7 @@ Pi coding agent extension with [CreateOS Sandbox](https://nodeops.network/create
 ```bash
 curl -sfL https://raw.githubusercontent.com/NodeOps-app/createos-cli/main/install.sh | sh -
 # Install from the repository root. The root manifest exposes this extension.
-pi install git:github.com/NodeOps-app/createos-claude-plugins
+pi install git:github.com/NodeOps-app/createos-plugin
 createos login
 ```
 
@@ -67,6 +67,27 @@ bundled files are copied; Pi credentials, settings, and sessions stay local.
 
 The LLM agent always has `sandbox_*` tools to create and manage sandboxes, networks,
 disks, port forwarding, and device VPN. Pi's built-in tools stay local unless sandbox mode is enabled.
+
+### Offload work that finishes
+
+For a build, a test suite, or a script, `sandbox_offload` does the whole thing in one call:
+it stages the directory to a fresh box, runs the command under a keepalive that survives a
+dropped stream, optionally pulls artifacts back, and destroys the box afterwards — even if
+the command throws.
+
+It is not a convenience wrapper over `sandbox_create` + `sandbox_exec`. Hand-rolling that
+sequence drops egress restriction (`egress_presets: ["npm"]` limits the box to the registry
+it actually needs), the keepalive, and the guaranteed destroy, so a "successful" run can
+leave an unrestricted box billing. The upload already skips `.git`, `node_modules`,
+`target`, virtualenvs and large media.
+
+### Drive a graphical desktop
+
+On a sandbox created with `rootfs: desktop:1`, `sandbox_desktop` mints a live noVNC link the
+user can open in a browser. `sandbox_computer` drives the same screen from the agent side — read
+screen bounds, move, click, type, press keys, open a URL, or list windows. Coordinates are raw
+X11 pixels: use its `screen` operation rather than assuming a resolution. Use
+`sandbox_screenshot` before and after anything you are unsure about.
 
 ### Fan out scenarios
 

@@ -1,6 +1,6 @@
 {
   "name": "@createos/pi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi coding agent extension with CreateOS Sandbox tools and optional remote tool routing",
   "keywords": [
     "createos",
@@ -21,7 +21,7 @@
   ],
   "type": "module",
   "scripts": {
-    "test": "bun test src/startup-sync.test.ts src/fanout.test.ts",
+    "test": "bun test src/startup-sync.test.ts src/fanout.test.ts src/tools.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

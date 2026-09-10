@@ -16,15 +16,16 @@ Pi agent (local)  →  createos CLI  →  CreateOS API  →  Sandbox
 
 ## File layout
 
-| File               | Purpose                                                                    |
-| ------------------ | -------------------------------------------------------------------------- |
-| `index.ts`         | Extension entry point: flags, slash commands, lifecycle hooks              |
-| `src/cli.ts`       | All `createos` CLI wrappers (sandbox, network, disk, device, tunnel, sync) |
-| `src/tools.ts`     | 33 registered tools, each single-purpose with `sandbox_` prefix            |
-| `src/ops.ts`       | BashOps/ReadOps/WriteOps/EditOps/LsOps backed by CLI exec/push/pull        |
-| `src/find-tool.ts` | Remote find via `createos sandbox exec` (rg/POSIX find fallback)           |
-| `src/grep-tool.ts` | Remote grep via `createos sandbox exec` (rg/POSIX grep fallback)           |
-| `src/util.ts`      | `shellQuote`, `shortId`, `joinPath`                                        |
+| File                    | Purpose                                                                                  |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| `index.ts`              | Extension entry point: flags, slash commands, lifecycle hooks                            |
+| `src/cli.ts`            | All `createos` CLI wrappers (sandbox, network, disk, device, tunnel, sync)               |
+| `src/tools.ts`          | 45 registered tools, with a compact `sandbox_` desktop surface                           |
+| `src/ops.ts`            | BashOps/ReadOps/WriteOps/EditOps/LsOps backed by CLI exec/push/pull                      |
+| `src/sandbox-engine.ts` | Copy — canonical is `packages/shared/`. Offload, keepalive, egress presets, computer use |
+| `src/find-tool.ts`      | Remote find via `createos sandbox exec` (rg/POSIX find fallback)                         |
+| `src/grep-tool.ts`      | Remote grep via `createos sandbox exec` (rg/POSIX grep fallback)                         |
+| `src/util.ts`           | `shellQuote`, `shortId`, `joinPath`                                                      |
 
 ## Pi extension best practices (enforced)
 
@@ -38,23 +39,34 @@ Pi agent (local)  →  createos CLI  →  CreateOS API  →  Sandbox
   description is deleted — it costs tokens every turn and teaches the model nothing.
   When present, a bullet must name its tool (`"Use sandbox_xyz when..."`), because Pi
   appends all bullets flat into one `Guidelines` section with no tool prefix
-- **Single-purpose tools** — no action enum parameters
+- **Focused tools** — group tightly related desktop actions under `sandbox_computer`; keep unrelated lifecycle operations separate
 - **`terminate: true`** on destructive tools (`sandbox_pause`, `sandbox_destroy`)
 - **Signal handling** on built-in tool replacements (find/grep check `signal?.aborted`)
 - **No background resources from factory** — all started in `session_start`
 - **Cleanup in `session_shutdown`** — temp SSH key + sandbox destroy
 
-## Tool inventory (33 tools)
+## Tool inventory (45 tools)
 
 ### Built-in replacements (7)
 
 `bash`, `read`, `write`, `edit`, `ls`, `find`, `grep` — run locally by default and route
 to the sandbox only when `--inside-createos-sandbox` is active.
 
-### Sandbox lifecycle (7)
+### Sandbox lifecycle (8)
 
 `sandbox_create`, `sandbox_exec`, `sandbox_info`, `sandbox_list`,
 `sandbox_pause`, `sandbox_resume`, `sandbox_fork`, `sandbox_destroy`
+
+### Offload engine (2)
+
+`sandbox_offload` — stage a directory, run a command under a keepalive, pull artifacts,
+destroy the box. `sandbox_fanout` — the same project source across independent scenarios,
+returning health-checked HTTPS URLs for the ones that serve a port.
+
+### Desktop / computer use (3)
+
+`sandbox_desktop` mints a noVNC URL, `sandbox_computer` performs a named desktop operation,
+and `sandbox_screenshot` captures a PNG. This matches the compact OpenCode tool surface.
 
 ### Sandbox config (5)
 
