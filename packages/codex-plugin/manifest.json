@@ -1,10 +1,20 @@
 {
-  "name": "createos-sandbox",
-  "version": "0.1.0",
-  "description": "Run code off your machine in disposable CreateOS Sandboxes — offload, fanout, scratch shell, reusable box with sync, tunnels, clusters, disks, and VPN.",
-  "keywords": ["createos", "sandbox", "offload", "remote", "compute"],
+  "name": "createos-sandbox-codex",
+  "version": "0.2.0",
+  "description": "Run ad-hoc, heavy, or untrusted code OFF your machine in disposable CreateOS Sandboxes. One-shot offload, parallel fanout, scratch shell, reusable box with sync, tunnel, public HTTPS expose, clusters, S3 disks, VPN, pause/resume, custom images, and a graphical desktop you drive by screenshot/click/type.",
+  "keywords": [
+    "createos",
+    "sandbox",
+    "offload",
+    "remote",
+    "compute",
+    "desktop",
+    "computer-use"
+  ],
   "paths": {
-    "skills": ["skills/using-createos-sandbox"],
+    "skills": [
+      "skills/using-createos-sandbox"
+    ],
     "hooks": {
       "Inline": [
         {
@@ -13,6 +23,15 @@
             {
               "type": "command",
               "command": "./scripts/session-start.sh"
+            }
+          ]
+        },
+        {
+          "event_name": "pre-tool-use",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "./scripts/offload-hint.sh"
             }
           ]
         }

@@ -1,82 +1,113 @@
-# @createos/codex
+# createos-sandbox-codex
 
-Codex plugin that offloads code to disposable [CreateOS](https://createos.sh) Sandboxes.
-Gives Codex a skill that teaches the agent how to use the `createos` CLI
-for sandbox lifecycle, networking, persistent disks, VPN, and more.
+Codex plugin that runs ad-hoc, heavy, or untrusted code OFF your machine, in
+disposable [CreateOS](https://createos.sh) Sandboxes.
+
+Same engine as the Claude Code plugin: the `cos` bash driver, the
+`using-createos-sandbox` skill, and a session-start hook that publishes the
+driver's absolute path. `scripts/cos` and `skills/` are copies of
+`packages/claude-code-plugin/` kept in sync by `scripts/sync-shared.sh`
+(CI fails on drift) — edit the originals there, never these copies.
 
 ## Install
 
 ```bash
 # 1. Add the marketplace
-codex plugin marketplace add NodeOps-app/createos-claude-plugins
+codex plugin marketplace add NodeOps-app/createos-plugin
 
 # 2. Install the plugin
-codex plugin add @createos/codex@createos
+codex plugin add createos-sandbox-codex --marketplace createos
 ```
 
 ## Prerequisites
 
-1. **createos CLI** — auto-installs on first use, or manually:
+1. **createos CLI** — `cos` auto-installs it on first use, or manually:
 
    ```bash
    curl -sfL https://raw.githubusercontent.com/NodeOps-app/createos-cli/main/install.sh | sh
    ```
 
-2. **Login** (one-time):
+2. **Login** (one-time, in your own terminal — it opens a browser):
+
    ```bash
    createos login
    ```
 
+   Or export `CREATEOS_API_KEY`. Never paste an API key into the agent chat.
+
+3. `jq`, `tar`, `perl`, `curl` — `cos` needs them; the session-start hook is a
+   no-op without `jq`.
+
 ## How it works
 
-1. Plugin installs a skill that teaches Codex the `createos` CLI commands
-2. When you ask to run code in a sandbox, Codex uses `createos sandbox create` + `createos sandbox exec`
-3. All commands execute inside remote CreateOS Sandboxes, not on your machine
+1. The session-start hook prints the driver's absolute path into Codex's context
+   and states the verb rule (`offload` for work with a finish line, `up`/`run`
+   for work that outlives one command).
+2. A `pre-tool-use` hook watches shell calls and suggests offloading when it sees
+   a heavy build or test. Advisory only — it never blocks. Silence with
+   `COS_NO_HINT=1`.
+3. The `using-createos-sandbox` skill carries the depth: egress restriction,
+   networking, lifecycle, images.
+4. Everything executes through `cos`, which wraps the authed `createos` CLI.
 
-## Commands the skill teaches
+**Do not hand-roll offloads out of raw `createos sandbox create/push/exec`.**
+That path looks equivalent and silently drops egress restriction, the keepalive
+that survives a dropped stream on a long build, guaranteed auto-destroy, and the
+auth preflight.
 
-| Command                                                       | What                       |
-| ------------------------------------------------------------- | -------------------------- |
-| `createos sandbox create`                                     | Create a sandbox           |
-| `createos sandbox exec <id> -- sh -c '<cmd>'`                 | Run command inside sandbox |
-| `createos sandbox list`                                       | List sandboxes             |
-| `createos sandbox get <id>`                                   | Sandbox status/IP/ingress  |
-| `createos sandbox rm <id> --yes`                              | Destroy sandbox            |
-| `createos sandbox pause/resume <id>`                          | Park/restore               |
-| `createos sandbox pull <id> <path> -`                         | Read file from sandbox     |
-| `createos sandbox tunnel --remote <port> --local <port> <id>` | Port forward               |
-| `createos sandbox network create/attach/show`                 | Private networks           |
-| `createos sandbox disk create/attach`                         | S3 disk mounts             |
-| `createos sandbox devices register`                           | Device VPN setup           |
+## Verbs
+
+Run `cos help` for the full list.
+
+| Verb                          | What                                                          |
+| ----------------------------- | ------------------------------------------------------------- |
+| `cos offload <dir> '<cmd>'`   | one-shot: stage → run (keepalive) → pull → destroy            |
+| `cos fanout <dir> '<cmd>'...` | each command in its own throwaway box, in parallel            |
+| `cos shell`                   | instant throwaway interactive Linux, destroyed on exit        |
+| `cos up` / `run` / `down`     | reusable project box, one per git root                        |
+| `cos sync`                    | background file sync into the project box                     |
+| `cos pause` / `resume`        | park a warm box at zero compute cost, restore it intact       |
+| `cos fork`                    | snapshot the project box into an independent clone            |
+| `cos tunnel` / `expose`       | box port → `127.0.0.1`, or a public HTTPS URL                 |
+| `cos cluster`                 | N boxes on one private network, addressable by name           |
+| `cos disk`                    | BYO S3 bucket mounts                                          |
+| `cos vpn`                     | WireGuard into your private networks                          |
+| `cos template`                | build a custom rootfs from a Dockerfile                       |
+| `cos desktop` / `computer`    | graphical box + noVNC URL; drive it by screenshot/click/type  |
 
 ## Architecture
 
 ```
 packages/codex-plugin/
-├── .claude-plugin/
-│   └── plugin.json              # Plugin manifest (name, skills ref)
-├── skills/
-│   └── using-createos-sandbox/
-│       ├── SKILL.md             # Main skill — createos CLI commands
-│       └── references/
-│           ├── offload-and-egress.md
-│           ├── networking.md
-│           └── lifecycle-and-images.md
+├── .claude-plugin/plugin.json   # marketplace manifest (name, version)
+├── manifest.json                # Codex manifest — skills + hooks wiring
+├── skills/using-createos-sandbox/
+│   ├── SKILL.md                 # copy — canonical lives in claude-code-plugin
+│   └── references/              # copies — offload-and-egress, networking, lifecycle-and-images
 ├── scripts/
-│   ├── cos                      # CLI driver (advanced offload patterns)
-│   └── session-start.sh         # Session hook
-├── manifest.json
+│   ├── cos                      # copy — the driver
+│   ├── offload-hint.sh          # copy — pre-tool-use nudge
+│   └── session-start.sh         # codex-specific: resolves cos relative to itself
 └── README.md
 ```
 
-## Differences from Pi and OpenCode plugins
+`scripts/session-start.sh` is the one file that is deliberately *not* a copy:
+Codex sets no `CLAUDE_PLUGIN_ROOT`, so it resolves the driver relative to its own
+location. The wire format is identical — Codex parses
+`hookSpecificOutput.additionalContext` exactly like Claude Code does.
 
-| Capability       | Pi                            | OpenCode                             | Codex                                       |
-| ---------------- | ----------------------------- | ------------------------------------ | ------------------------------------------- |
-| Tool replacement | Yes — transparent             | No — prompt injection                | No — skill-based                            |
-| Custom tools     | 47 registered tools           | 33 registered tools                  | None — uses bash + createos CLI             |
-| Integration      | `pi.registerTool()`           | `tool()` in plugin                   | Skill teaches CLI commands                  |
-| Install          | `pi install npm:@createos/pi` | `opencode plugin @createos/opencode` | `codex plugin add @createos/codex@createos` |
+Symlinking the shared files instead of copying them does not work: the Codex
+plugin installer copies regular files only, so a symlinked repo installs with no
+driver and no skill, silently. Verified against codex-cli 0.153.4.
+
+## Differences from the Pi and OpenCode plugins
+
+| Capability       | Pi                            | OpenCode                             | Codex                                |
+| ---------------- | ----------------------------- | ------------------------------------ | ------------------------------------ |
+| Integration      | `pi.registerTool()`           | `tool()` in plugin                   | skill + hooks over the `cos` driver  |
+| Custom tools     | 34 registered tools           | 38 registered tools                  | none — the agent's own shell         |
+| Slash commands   | no                            | no                                   | no (Claude Code plugin has 20)       |
+| Install          | `pi install npm:@createos/pi` | `opencode plugin @createos/opencode` | `codex plugin add createos-sandbox-codex --marketplace createos` |
 
 ## License
 

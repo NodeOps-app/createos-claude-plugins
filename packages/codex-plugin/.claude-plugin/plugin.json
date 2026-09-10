@@ -1,11 +1,21 @@
 {
-  "name": "@createos/codex",
+  "name": "createos-sandbox-codex",
   "displayName": "CreateOS Sandbox",
-  "version": "0.1.0",
-  "description": "Run code off your machine in disposable CreateOS Sandboxes via the createos CLI.",
-  "author": { "name": "NodeOps", "url": "https://createos.sh" },
+  "version": "0.2.0",
+  "description": "Run ad-hoc, heavy, or untrusted code OFF your machine in disposable CreateOS Sandboxes via the `cos` driver — offload, fanout, scratch shell, reusable box with sync, tunnel, expose, clusters, S3 disks, VPN, pause/resume, custom images, and a graphical desktop you drive by screenshot/click/type.",
+  "author": {
+    "name": "NodeOps",
+    "url": "https://createos.sh"
+  },
   "homepage": "https://createos.sh",
-  "keywords": ["sandbox", "createos", "remote-exec", "isolation"],
+  "keywords": [
+    "sandbox",
+    "createos",
+    "remote-exec",
+    "isolation",
+    "desktop",
+    "computer-use"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "CreateOS Sandbox",

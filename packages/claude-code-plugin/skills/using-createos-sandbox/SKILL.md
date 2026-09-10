@@ -1,6 +1,6 @@
 ---
 name: using-createos-sandbox
-description: Use when you need to run code OFF the user's machine — heavy/long builds or test suites, untrusted or unknown code, a parallel test/config matrix across many boxes, an instant clean Linux to try a tool, a live dev-server/watcher Claude edits against, reaching a box-side service from localhost (port tunnel) or sharing it on the public web (HTTPS preview URL), a multi-machine cluster on one private network, a WireGuard VPN into that network, mounting an S3 bucket of data, or work that needs a real screen — a graphical Linux desktop with a browser that you drive by screenshot/click/type and the user can watch over noVNC. Offloads to ephemeral CreateOS Sandboxes via the `cos` helper (stage → exec → pull → auto-destroy), plus fanout, a scratch shell, and an opt-in reusable box with sync, tunnel, expose, desktop/computer-use, cluster, disk, vpn, pause/resume, custom images, and snapshot/fork.
+description: Use when you need to run code OFF the user's machine — heavy/long builds or test suites, untrusted or unknown code, a parallel test/config matrix across many boxes, an instant clean Linux to try a tool, a live dev-server/watcher you edit against, reaching a box-side service from localhost (port tunnel) or sharing it on the public web (HTTPS preview URL), a multi-machine cluster on one private network, a WireGuard VPN into that network, mounting an S3 bucket of data, or work that needs a real screen — a graphical Linux desktop with a browser that you drive by screenshot/click/type and the user can watch over noVNC. Offloads to ephemeral CreateOS Sandboxes via the `cos` helper (stage → exec → pull → auto-destroy), plus fanout, a scratch shell, and an opt-in reusable box with sync, tunnel, expose, desktop/computer-use, cluster, disk, vpn, pause/resume, custom images, and snapshot/fork.
 ---
 
 # Using CreateOS Sandbox as remote compute
@@ -9,9 +9,9 @@ A CreateOS Sandbox is an isolated Linux box that goes from create to running you
 
 ## Running the driver
 
-Everything goes through `cos`. **A SessionStart hook prints its absolute path into your context at the start of the session — use that literal path.**
+Everything goes through `cos`. **A session-start hook prints its absolute path into your context at the start of the session — use that literal path.**
 
-Do not write `${CLAUDE_PLUGIN_ROOT}` into a Bash command. That variable is set when slash commands are loaded but is **unset in the Bash tool's environment**, so the path collapses to `/scripts/cos` and dies with exit 127.
+In Claude Code specifically, do not write `${CLAUDE_PLUGIN_ROOT}` into a Bash command. That variable is set when slash commands are loaded but is **unset in the Bash tool's environment**, so the path collapses to `/scripts/cos` and dies with exit 127.
 
 If you cannot locate or run `cos`, **stop and say so.** Do not fall back to composing the job out of raw `createos sandbox create/push/exec` calls. That path looks equivalent and is not: it silently drops egress restriction, the keepalive that survives a dropped stream on a long build, guaranteed auto-destroy, and the auth preflight — so a "successful" run can leave an unrestricted box billing with no isolation ever applied. A missing driver is a hard stop, not a reason to improvise.
 
@@ -28,7 +28,7 @@ Healthy output names one of three credential sources: `CREATEOS_API_KEY`, a brow
 **You cannot fix that yourself.** `createos login` is an interactive TTY prompt that opens a browser, and an agent shell has no TTY. Do not try to run it and do not work around it with `--token`. Relay the two options to the user:
 
 1. **Browser (recommended)** — they run `createos login` in their own terminal and pick "Sign in with browser".
-2. **API key** — they `export CREATEOS_API_KEY=<key>` (from <https://createos.sh>) in the shell that launched Claude Code.
+2. **API key** — they `export CREATEOS_API_KEY=<key>` (from <https://createos.sh>) in the shell that launched the agent.
 
 **Never ask the user to paste an API key into the conversation** — it lands in the transcript. Export or browser, nothing else.
 
@@ -43,7 +43,7 @@ Every `cos` command except `install` and `auth` runs this check first, so an una
 | **Parallel/matrix work** — same job across N configs, test shards, batch                       | `fanout` — each command in its own throwaway box, concurrently, results collected. |
 | **Quick scratch Linux** — try a CLI/tool/snippet on a clean box                                | `shell` — instant keyless box, destroyed on exit (interactive; the user runs it).  |
 | **Clean-room repro** — "works on my machine" bugs, dependency conflicts                        | Fresh rootfs every time, no host state.                                            |
-| **Live dev loop** — dev server / test watcher / REPL that reacts to edits                      | Project box + `sync`; Claude edits locally, the box reacts.                        |
+| **Live dev loop** — dev server / test watcher / REPL that reacts to edits                      | Project box + `sync`; you edit locally, the box reacts.                        |
 | **Reach a box-side service** — dev server, DB, API                                             | `tunnel` (private, to `127.0.0.1`) or `expose` (public HTTPS link to share).       |
 | **Needs a screen** — a real browser, a GUI app, or a desktop to click through                  | `desktop` — graphical box + noVNC URL; `computer` to drive it (screenshot/click/type). |
 | **Multi-machine** — distributed system, DB replication, p2p mesh, load test                    | `cluster up N` — boxes share one private net, reach each other by name.            |
@@ -106,7 +106,7 @@ Each job gets its own box with no shared network — that is what distinguishes 
 
 ## Pattern B — reusable project box (opt-in)
 
-For repeated runs against a warm box, or a dev server Claude edits against. One box per git root, tracked in a statefile.
+For repeated runs against a warm box, or a dev server you edit against. One box per git root, tracked in a statefile.
 
 ```bash
 cos up -s s-2vcpu-2gb    # create/reuse this project's box

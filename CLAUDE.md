@@ -84,7 +84,7 @@ claim aligned with `fc`. This repo is one of five in the product mesh.
 | **fc-sdk**       | `../fc-sdk`                              | TypeScript SDK **+ `examples/`**                                                   | 🌐 public  | public SDK methods, wire types, example apps                                       |
 | **createos-cli** | `../createos-cli`                        | Go CLI                                                                             | 🌐 public  | commands, flags, help/UX text                                                      |
 | **website-04**   | `../website-04` (`content/docs/Sandbox`) | public docs                                                                        | 🌐 public  | REST / SDK / CLI reference + concept pages                                         |
-| **createos**     | `../createos-claude-plugins`             | Plugin marketplace; Claude Code, Pi, OpenCode integrations over the `createos` CLI | 🌐 public  | skills, slash commands, hooks, tools                                               |
+| **createos**     | `../createos-plugin`                     | Plugin marketplace; Claude Code, Pi, OpenCode integrations over the `createos` CLI | 🌐 public  | skills, slash commands, hooks, tools                                               |
 
 ### What counts as a shared surface
 

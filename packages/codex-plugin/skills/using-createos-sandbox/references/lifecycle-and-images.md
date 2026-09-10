@@ -65,6 +65,7 @@ Built-ins are kept warm on the hosts, so they boot with no image pull:
 | `ubuntu:26.04` | plain Ubuntu                                                                                |
 | `debian:13`    | trixie                                                                                      |
 | `alpine:3.20`  | musl + busybox, far smaller; expect glibc-linked binaries and wheels not to work            |
+| `desktop:1`    | graphical — XFCE, Google Chrome, `xdotool`/`wmctrl`/`scrot`/`xclip`, and the Claude Code, Codex, Pi, OpenCode and Cursor CLIs. Reach it with `cos desktop`, not `cos up -r desktop:1` — only the former waits for the desktop stack to boot and mints the noVNC URL |
 
 `createos sandbox rootfs` lists what the account can actually boot.
 

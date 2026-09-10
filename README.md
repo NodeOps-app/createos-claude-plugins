@@ -35,7 +35,7 @@ Heavy builds, flaky test suites, and untrusted code don't belong on your laptop.
 
 ```bash
 # 1. Add the marketplace + install the plugin
-/plugin marketplace add NodeOps-app/createos-claude-plugins
+/plugin marketplace add NodeOps-app/createos-plugin
 /plugin install createos-sandbox@createos
 
 # 2. Offload a heavy test run to a throwaway box (auto-destroys)
@@ -46,7 +46,7 @@ Heavy builds, flaky test suites, and untrusted code don't belong on your laptop.
 
 ```bash
 # 1. Install the extension from this repository
-pi install git:github.com/NodeOps-app/createos-claude-plugins
+pi install git:github.com/NodeOps-app/createos-plugin
 
 # 2. Start Pi locally with CreateOS sandbox tools available
 pi
@@ -65,10 +65,10 @@ pi --inside-createos-sandbox --createos-watch
 
 ```bash
 # 1. Add the marketplace
-codex plugin marketplace add NodeOps-app/createos-claude-plugins
+codex plugin marketplace add NodeOps-app/createos-plugin
 
 # 2. Install the plugin
-codex plugin add @createos/codex@createos
+codex plugin add createos-sandbox-codex --marketplace createos
 
 # 3. Launch codex — the skill teaches createos CLI usage
 codex
@@ -88,7 +88,7 @@ opencode
 
 ```bash
 # 1. Install the bundle from this monorepo checkout
-dsh plugin --profile web add /path/to/createos-claude-plugins/packages/dsh-createos
+dsh plugin --profile web add /path/to/createos-plugin/packages/dsh-createos
 
 # 2. Configure CreateOS sandbox credentials
 export CREATEOS_SANDBOX_API_KEY='...'
@@ -106,7 +106,7 @@ The Claude Code, Codex, Pi, and OpenCode integrations use the `createos` CLI, wh
 | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [**claude-code-plugin**](./packages/claude-code-plugin)       | Hooks-based Claude Code plugin — offload, parallel fanout, scratch shell, reusable box with sync, port tunnel, public HTTPS expose, private-network clusters, BYO-S3 disk mounts, WireGuard VPN, and snapshot/fork — all driving the authed `createos` CLI. |
 | [**pi-extension**](./packages/pi-extension)                   | Pi coding agent extension with all 33 `sandbox_*` tools for lifecycle, configuration, port tunnels, file sync, private networks, persistent disks, and device VPN. Built-in tools route remotely only with `--inside-createos-sandbox`.                     |
-| [**@createos/codex**](./packages/codex-plugin)                | Codex plugin — skill that teaches the `createos` CLI for sandbox lifecycle, networking, disks, and VPN.                                                                                                                                                     |
+| [**createos-sandbox-codex**](./packages/codex-plugin)         | Codex plugin — the `cos` driver, the `using-createos-sandbox` skill, and session-start / offload-hint hooks. Same engine as the Claude Code plugin.                                                                                                        |
 | [**@createos/opencode**](./packages/opencode-plugin)          | OpenCode plugin with 33 sandbox tools (`sandbox_exec`, `sandbox_push`, `sandbox_pull`, networks, disks, VPN, sync) and system prompt injection for sandbox-first workflows.                                                                                 |
 | [**@nodeops-createos/dsh-createos**](./packages/dsh-createos) | DeepSeek Harness bundle that replaces `ctx.fs` and `ctx.subprocess` together, so Bash, file, LSP, and PTY consumers operate inside one CreateOS sandbox without provider-specific tool forks.                                                               |
 | [**createos.sandbox**](./packages/herdr-plugin)               | Herdr plugin that runs Claude Code, Codex, OpenCode, Pi, or Cursor **inside** a CreateOS Sandbox and attaches its PTY to a Herdr pane. One pane maps to one sandbox, with filtered upload, two-way sync, patch apply back, and Herdr agent detection.        |
@@ -225,28 +225,28 @@ Full reference in [dsh-createos/README.md](./packages/dsh-createos/README.md).
 **From GitHub (recommended):**
 
 ```
-/plugin marketplace add NodeOps-app/createos-claude-plugins
+/plugin marketplace add NodeOps-app/createos-plugin
 /plugin install createos-sandbox@createos
 ```
 
 **From a local checkout:**
 
 ```
-git clone https://github.com/NodeOps-app/createos-claude-plugins
-/plugin marketplace add /path/to/createos-claude-plugins
+git clone https://github.com/NodeOps-app/createos-plugin
+/plugin marketplace add /path/to/createos-plugin
 /plugin install createos-sandbox@createos
 ```
 
 **DeepSeek Harness from a local checkout:**
 
 ```bash
-dsh plugin --profile web add /path/to/createos-claude-plugins/packages/dsh-createos
+dsh plugin --profile web add /path/to/createos-plugin/packages/dsh-createos
 ```
 
 **Dev (instant, no install):**
 
 ```bash
-claude --plugin-dir /path/to/createos-claude-plugins/packages/claude-code-plugin
+claude --plugin-dir /path/to/createos-plugin/packages/claude-code-plugin
 /reload-plugins      # after editing plugin files
 ```
 
@@ -267,7 +267,7 @@ claude --plugin-dir /path/to/createos-claude-plugins/packages/claude-code-plugin
 ## Repository layout
 
 ```
-createos-claude-plugins/              # marketplace root
+createos-plugin/                      # marketplace root
 ├─ .claude-plugin/
 │  └─ marketplace.json                # marketplace manifest
 ├─ packages/

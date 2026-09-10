@@ -1,7 +1,10 @@
 {
   "name": "createos",
   "description": "NodeOps CreateOS plugins — disposable sandbox compute for Claude Code, Codex, and more.",
-  "owner": { "name": "NodeOps", "url": "https://createos.sh" },
+  "owner": {
+    "name": "NodeOps",
+    "url": "https://createos.sh"
+  },
   "plugins": [
     {
       "name": "createos-sandbox",
@@ -9,9 +12,9 @@
       "description": "Run ad-hoc/heavy/untrusted code in disposable CreateOS Sandboxes; offload, parallel fanout, scratch shell, reusable box with sync, port tunnel, public expose, network clusters, S3 disks, WireGuard VPN, fork, pause/resume, and custom images."
     },
     {
-      "name": "@createos/codex",
+      "name": "createos-sandbox-codex",
       "source": "./packages/codex-plugin",
-      "description": "Codex plugin for disposable CreateOS Sandboxes — skill + createos CLI for sandbox lifecycle, networking, disks, and VPN."
+      "description": "Codex plugin for disposable CreateOS Sandboxes — the `cos` driver, the using-createos-sandbox skill, and session-start / offload-hint hooks. Same engine as the Claude Code plugin."
     }
   ]
 }
