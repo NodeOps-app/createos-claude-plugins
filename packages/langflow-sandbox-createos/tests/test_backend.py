@@ -431,8 +431,9 @@ def test_executor_returns_the_guest_run_outputs_to_api_callers(monkeypatch):
         )
     )
 
-    monkeypatch.setattr(ex, "SandboxClient", lambda *_a, **_k: types.SimpleNamespace(
-        destroy=lambda *_: None, close=lambda: None))
+    monkeypatch.setattr(
+        ex, "SandboxClient", lambda *_a, **_k: types.SimpleNamespace(destroy=lambda *_: None, close=lambda: None)
+    )
     monkeypatch.setattr(ex, "_provision", lambda _client: "sb-test")
     monkeypatch.setattr(ex, "_stage", lambda *_a, **_k: None)
     monkeypatch.setattr(ex, "_run", lambda *_a, **_k: {"stdout": stdout, "exit_code": 0})
