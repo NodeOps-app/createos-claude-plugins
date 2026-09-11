@@ -79,7 +79,7 @@ Run `cos help` for the full list.
 
 ```
 packages/codex-plugin/
-├── .claude-plugin/plugin.json   # marketplace manifest (name, version)
+├── .codex-plugin/plugin.json    # Codex plugin manifest (name, version)
 ├── manifest.json                # Codex manifest — skills + hooks wiring
 ├── skills/using-createos-sandbox/
 │   ├── SKILL.md                 # copy — canonical lives in claude-code-plugin
