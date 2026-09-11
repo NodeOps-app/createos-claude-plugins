@@ -110,7 +110,9 @@ The Claude Code, Codex, Pi, and OpenCode integrations use the `createos` CLI, wh
 | [**@createos/opencode**](./packages/opencode-plugin)          | OpenCode plugin with 33 sandbox tools (`sandbox_exec`, `sandbox_push`, `sandbox_pull`, networks, disks, VPN, sync) and system prompt injection for sandbox-first workflows.                                                                                 |
 | [**@nodeops-createos/dsh-createos**](./packages/dsh-createos) | DeepSeek Harness bundle that replaces `ctx.fs` and `ctx.subprocess` together, so Bash, file, LSP, and PTY consumers operate inside one CreateOS sandbox without provider-specific tool forks.                                                               |
 | [**createos.sandbox**](./packages/herdr-plugin)               | Herdr plugin that runs Claude Code, Codex, OpenCode, Pi, or Cursor **inside** a CreateOS Sandbox and attaches its PTY to a Herdr pane. One pane maps to one sandbox, with filtered upload, two-way sync, patch apply back, and Herdr agent detection.        |
+| [**langflow-sandbox-createos**](./packages/langflow-sandbox-createos) | Langflow integration (Python, pip) — three surfaces from one install: a **sandbox backend** hardening the Python Interpreter, a **CreateOS Sandbox component** with guest reuse and file return, and an **executor** that runs a whole flow graph in a microVM. A Langflow host with no KVM/HVF still gets hardware isolation.                                  |
 | [**createos-orca-plugin**](https://github.com/NodeOps-app/createos-orca-plugin)| Orca VM recipe — runs a whole Orca workspace on a disposable microVM instead of your laptop. Lives in its own repository, because Orca installs a plugin from a repository root. Optionally installs Claude Code, Codex, Cursor, OpenCode, or Pi.           |
+| [**@createos/n8n-nodes-createos**](https://github.com/NodeOps-app/n8n-nodes-createos)| n8n community node — create and manage sandboxes, run shell commands, transfer files, and manage templates, networks, and disks from n8n workflows. Lives in its own repository; talks to the REST API with a **CreateOS API** credential, not the CLI.                                          |
 
 ## Orca — run a workspace on a sandbox
 
@@ -299,6 +301,11 @@ createos-plugin/                      # marketplace root
 │  │  ├─ src/fs/                      # CreateOS-backed ctx.fs provider
 │  │  ├─ src/subprocess/              # CreateOS-backed ctx.subprocess + PTY provider
 │  │  └─ README.md
+│  ├─ langflow-sandbox-createos/       # Langflow sandbox backend (Python, pip)
+│  │  ├─ pyproject.toml                # lfx.sandbox_backends entry point
+│  │  ├─ src/langflow_sandbox_createos/ # the backend
+│  │  ├─ tests/test_backend.py         # httpx.MockTransport control plane
+│  │  └─ README.md
 │  └─ herdr-plugin/                  # Herdr plugin (TypeScript, run by bun)
 │     ├─ herdr-plugin.toml            # actions, panes, build step
 │     ├─ build.sh                     # writes run.sh with absolute bun/createos paths
@@ -328,5 +335,7 @@ Issues and PRs welcome. The Claude Code, Codex, Pi, and OpenCode plugins are thi
 - [OpenCode plugin README](./packages/opencode-plugin/README.md)
 - [DeepSeek Harness plugin README](./packages/dsh-createos/README.md)
 - [Herdr plugin README](./packages/herdr-plugin/README.md)
+- [Langflow sandbox backend README](./packages/langflow-sandbox-createos/README.md)
 - [Herdr plugins](https://herdr.dev/docs/plugins/) — how Herdr plugins work
 - [Orca plugin README](https://github.com/NodeOps-app/createos-orca-plugin#readme) — separate repository
+- [n8n node README](https://github.com/NodeOps-app/n8n-nodes-createos#readme) — separate repository

@@ -1,8 +1,9 @@
 # CLAUDE.md — createos (integrations)
 
-Public plugin marketplace and integrations for CreateOS Sandbox. Five packages
-ship host integrations that drive the authed `createos` CLI to run ad-hoc /
-heavy / untrusted code in disposable CreateOS sandboxes:
+Public plugin marketplace and integrations for CreateOS Sandbox. Six packages
+ship host integrations that run ad-hoc / heavy / untrusted code in disposable
+CreateOS sandboxes — five through the authed `createos` CLI, one (Langflow)
+straight against the REST API:
 
 | Package                          | IDE / host       | Path                           |
 | -------------------------------- | ---------------- | ------------------------------ |
@@ -11,6 +12,46 @@ heavy / untrusted code in disposable CreateOS sandboxes:
 | `@createos/opencode`             | OpenCode         | `packages/opencode-plugin/`    |
 | `@nodeops-createos/dsh-createos` | DeepSeek Harness | `packages/dsh-createos/`       |
 | `createos.sandbox`               | Herdr            | `packages/herdr-plugin/`       |
+| `langflow-sandbox-createos`      | Langflow         | `packages/langflow-sandbox-createos/` |
+
+`langflow-sandbox-createos/` is the odd one out twice over: it is **Python**, not
+TypeScript, and it does not drive the `createos` CLI — it talks to the control
+plane's REST API directly with `httpx`, because it runs inside the Langflow
+server process rather than beside an agent. Langflow needs no fork. Do not
+"unify" it with the other packages: the `Capabilities` / `SandboxResult`
+dataclasses it returns belong to `lfx`, and that coupling is the whole point.
+
+It ships **three** Langflow entry points from one distribution, each opted into
+separately:
+
+| Entry point | Surface | Scope |
+| ----------- | ------- | ----- |
+| `lfx.sandbox_backends` | Python Interpreter's code runs in a microVM | allowlisted by the operator |
+| `langflow.extensions` | a **CreateOS Sandbox** canvas component | auto-imported, inert until used |
+| `lfx.executors` | a whole flow graph runs in a microVM | `/api/v1/run`, CLI, Loop — **not** the UI |
+
+Two facts that cost real time to establish, both verified against a live
+control plane rather than read from docs:
+
+- **CreateOS does not enforce hostname egress rules.** IP and CIDR rules are
+  enforced; `host`, `host:port` and `*.host` are accepted, stored, echoed back
+  and ignored. The backend therefore declares
+  `supports_domain_allowlist=False` and refuses a configured allowlist rather
+  than pretending. Do not "fix" that by resolving domains to addresses — DNS
+  rotates and CDN addresses are shared.
+- **Langflow's UI build endpoint does not use the executor seam.** It walks
+  vertices itself, so `LANGFLOW_EXECUTOR_KIND` never affects the playground.
+- **`/api/v1/run` reads `RunComplete.outputs` and nothing else.** `Graph.arun`
+  goes through `Coordinator.run_to_completion`, which returns only that terminal
+  field — the `StepResult` payload stream is never consulted. An executor that
+  terminates with `RunComplete(outputs=[])` therefore returns `outputs: []` to
+  every API caller while still running the flow correctly; measured live as
+  2.9 s with full results (executor off) versus 21 s and nothing (executor on).
+  The guest harvests its own vertices like `Graph._run` and ships `RunOutputs`
+  back. Do not "simplify" that back to an empty terminal envelope.
+
+Never name a component input `code`: Langflow reserves `template["code"]` for a
+component's own source, and an input by that name silently replaces it.
 
 `herdr-plugin/` targets [Herdr](https://herdr.dev), a terminal workspace
 manager rather than a coding agent, so it inverts the shape of the others.

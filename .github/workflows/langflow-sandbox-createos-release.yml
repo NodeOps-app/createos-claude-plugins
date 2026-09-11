@@ -1,0 +1,214 @@
+name: langflow-sandbox-createos release
+
+# Publishes the Python package to PyPI.
+#
+# Auth is PyPI Trusted Publishing (OIDC) — there is no API token in this
+# repository's secrets and nothing to leak or rotate. PyPI mints a short-lived
+# credential for this exact workflow file on this exact repository. See the
+# one-time setup in packages/langflow-sandbox-createos/RELEASING.md.
+#
+# Triggered by a package-scoped tag, because this is a monorepo and a bare
+# `v0.2.0` would be ambiguous once another package wants to release:
+#
+#     git tag langflow-sandbox-createos-v0.2.0
+#     git push origin langflow-sandbox-createos-v0.2.0
+#
+# The tag version and the version in pyproject.toml must agree. They are
+# checked before anything is built, because a mismatch published to PyPI cannot
+# be taken back — PyPI does not allow re-uploading a version, even a deleted
+# one.
+
+on:
+  push:
+    tags:
+      - "langflow-sandbox-createos-v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_DIR: packages/langflow-sandbox-createos
+
+jobs:
+  verify:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag and pyproject must agree
+        id: check
+        env:
+          # Via env, never interpolated into the script body: a tag name is
+          # attacker-shaped input to a shell, even when only writers can push one.
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE_DIR"
+          PYPROJECT_VERSION="$(python -c '
+          import re, pathlib
+          text = pathlib.Path("pyproject.toml").read_text()
+          print(re.search(r"^version\s*=\s*\"([^\"]+)\"", text, re.M).group(1))
+          ')"
+          echo "pyproject version: $PYPROJECT_VERSION"
+
+          if [ "$EVENT" = "push" ]; then
+            TAG_VERSION="${REF_NAME#langflow-sandbox-createos-v}"
+            echo "tag version:       $TAG_VERSION"
+            if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
+              echo "::error::Tag says $TAG_VERSION but pyproject.toml says $PYPROJECT_VERSION."
+              echo "::error::Fix the version in pyproject.toml, or delete and re-cut the tag."
+              exit 1
+            fi
+          fi
+
+          echo "version=$PYPROJECT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to publish a version that already exists
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/langflow-sandbox-createos/$VERSION/json")"
+          if [ "$CODE" = "200" ]; then
+            echo "::error::langflow-sandbox-createos $VERSION is already on PyPI."
+            echo "::error::PyPI never allows reusing a version. Bump it."
+            exit 1
+          fi
+          echo "version $VERSION is free (HTTP $CODE)"
+
+  test:
+    # The full CI suite again against the exact tagged commit, so a release can
+    # never be greener than the code it ships.
+    needs: verify
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/langflow-sandbox-createos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+
+      - name: Environment
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python -e . pytest
+
+      - name: Lint and test
+        env:
+          CREATEOS_SANDBOX_API_KEY: ci-not-a-real-key
+        run: |
+          uvx ruff check src tests
+          uvx ruff format --check src tests
+          .venv/bin/python -m pytest tests/ -q
+
+  build:
+    needs: [verify, test]
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+
+      - name: Build sdist and wheel
+        working-directory: packages/langflow-sandbox-createos
+        run: uv build --out-dir dist
+
+      - name: Check metadata
+        working-directory: packages/langflow-sandbox-createos
+        run: uvx twine check dist/*
+
+      - name: The wheel must carry the entry points and the manifest
+        # Inspected in the built artifact, not the source tree: a wheel that
+        # builds cleanly and registers nothing is a shipped no-op, and that has
+        # already happened once here.
+        working-directory: packages/langflow-sandbox-createos
+        run: |
+          python - <<'PY'
+          import pathlib
+          import zipfile
+
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+          names = zipfile.ZipFile(wheel).namelist()
+          entry_points = next(
+              zipfile.ZipFile(wheel).read(n).decode() for n in names if n.endswith("entry_points.txt")
+          )
+          print(entry_points)
+          for group in ("lfx.sandbox_backends", "langflow.extensions", "lfx.executors"):
+              assert group in entry_points, f"{group} missing from the wheel"
+          assert any(n.endswith("langflow_sandbox_createos/extension.json") for n in names), \
+              "extension.json missing from the wheel"
+          assert any("components/createos/createos_sandbox.py" in n for n in names), \
+              "component module missing from the wheel"
+          print("wheel contents verified:", wheel.name)
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: packages/langflow-sandbox-createos/dist/
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    # Named environments let you require a human approval before either target
+    # in the repository's environment protection rules.
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'pypi' }}
+      url: https://pypi.org/project/langflow-sandbox-createos/${{ needs.verify.outputs.version }}
+    permissions:
+      # The only privilege the publish job gets: mint an OIDC token for PyPI.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          print-hash: true
+
+      - name: Publish to PyPI
+        if: github.event_name == 'push' || inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          print-hash: true
