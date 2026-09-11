@@ -7,6 +7,9 @@
 
 import { tool } from "@opencode-ai/plugin";
 import * as cli from "./cli.ts";
+import * as engine from "./sandbox-engine.ts";
+import { shortId } from "./util.ts";
+import { tmpdir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -618,6 +621,243 @@ export function createTools($: any, getActive: () => ToolSandbox | null) {
         const devId = devices[0].id ?? devices[0].device_id!;
         await cli.detachDeviceFromNetwork($, devId, args.network);
         return `Device detached from network "${args.network}".`;
+      },
+    }),
+
+    // =====================================================================
+    // Offload engine — cos semantics (staging, egress, keepalive, auto-destroy)
+    // =====================================================================
+
+    sandbox_offload: tool({
+      description:
+        "Run a command in a THROWAWAY sandbox and destroy it: stage a local directory to /work, " +
+        "run the command with a keepalive that survives a dropped stream, optionally pull artifacts " +
+        "back, then destroy the box. Use this for work with a finish line — a build, a test suite, " +
+        "a script. Prefer it over sandbox_create + sandbox_exec, which leaks boxes and drops egress " +
+        "restriction. Big directories (.git, node_modules, target, venvs, media) are excluded from " +
+        "the upload automatically.",
+      args: {
+        dir: tool.schema.string().describe("Local directory to stage into the box at /work"),
+        command: tool.schema
+          .string()
+          .describe("Shell command to run, with /work as the working directory"),
+        shape: tool.schema
+          .string()
+          .optional()
+          .describe("VM size. Defaults to 's-1vcpu-1gb'; use 's-2vcpu-2gb' for compiled builds"),
+        rootfs: tool.schema.string().optional().describe("Base image. Defaults to 'devbox:1'"),
+        egress_presets: tool.schema
+          .array(tool.schema.string())
+          .optional()
+          .describe("Allow only what these ecosystems need: python-uv | rust-cargo | npm | github"),
+        egress: tool.schema
+          .array(tool.schema.string())
+          .optional()
+          .describe("Extra domains the box may reach; composes with egress_presets"),
+        egress_all: tool.schema
+          .boolean()
+          .optional()
+          .describe(
+            "Unrestricted egress. Only for code you trust — it removes the isolation this tool exists for",
+          ),
+        exclude: tool.schema
+          .array(tool.schema.string())
+          .optional()
+          .describe("Extra upload excludes"),
+        out: tool.schema
+          .string()
+          .optional()
+          .describe("Path under /work to pull back into dir when the command finishes"),
+        swap_gb: tool.schema
+          .number()
+          .optional()
+          .describe("Swap to add before running — OOM headroom for compiled builds"),
+        keep_on_fail: tool.schema
+          .boolean()
+          .optional()
+          .describe("Keep the box when the command exits non-zero, for debugging"),
+      },
+      async execute(args) {
+        const res = await engine.offload({
+          dir: args.dir,
+          command: args.command,
+          shape: args.shape,
+          rootfs: args.rootfs,
+          egress: args.egress,
+          egressPresets: args.egress_presets,
+          egressAll: args.egress_all,
+          exclude: args.exclude,
+          out: args.out,
+          swapGB: args.swap_gb,
+          keepOnFail: args.keep_on_fail,
+        });
+        const lines = [
+          `sandbox ${res.sandboxId} — exit code ${res.exitCode ?? "unknown"}${res.kept ? " (box KEPT)" : " (box destroyed)"}`,
+        ];
+        for (const w of res.warnings) lines.push(`warning: ${w}`);
+        if (res.pulledArtifacts) lines.push(`pulled ${args.out} back into ${args.dir}`);
+        lines.push("", res.log || "(no output)");
+        return lines.join("\n");
+      },
+    }),
+
+    sandbox_fanout: tool({
+      description:
+        "Run each command in its OWN throwaway sandbox, in parallel, from the same staged directory. " +
+        "For test shards, config matrices, and batch jobs. Every box is destroyed when its command " +
+        "finishes. Concurrency is capped because the control plane limits how many boxes may run at once.",
+      args: {
+        dir: tool.schema.string().describe("Local directory staged into every box at /work"),
+        commands: tool.schema.array(tool.schema.string()).describe("One command per box"),
+        jobs: tool.schema.number().optional().describe("Max boxes running at once. Defaults to 2"),
+        shape: tool.schema.string().optional().describe("VM size for every box"),
+        rootfs: tool.schema.string().optional().describe("Base image for every box"),
+        egress_presets: tool.schema
+          .array(tool.schema.string())
+          .optional()
+          .describe("python-uv | rust-cargo | npm | github"),
+        egress: tool.schema
+          .array(tool.schema.string())
+          .optional()
+          .describe("Extra allowed domains"),
+        egress_all: tool.schema
+          .boolean()
+          .optional()
+          .describe("Unrestricted egress — trusted code only"),
+        exclude: tool.schema
+          .array(tool.schema.string())
+          .optional()
+          .describe("Extra upload excludes"),
+      },
+      async execute(args) {
+        const results = await engine.fanout({
+          dir: args.dir,
+          commands: args.commands,
+          jobs: args.jobs,
+          shape: args.shape,
+          rootfs: args.rootfs,
+          egress: args.egress,
+          egressPresets: args.egress_presets,
+          egressAll: args.egress_all,
+          exclude: args.exclude,
+        });
+        return results
+          .map((r) => {
+            const box = r.sandboxId ? ` ${r.sandboxId}` : "";
+            const head = `[exit ${r.exitCode ?? "unknown"}]${box}${r.kept ? " BOX KEPT" : ""} ${r.command}`;
+            // A retained box is the one thing the caller must act on, so its id
+            // and cleanup instructions cannot be dropped from the summary.
+            const notes = r.warnings.map((w) => `warning: ${w}`);
+            const tail = r.log.split("\n").slice(-20).join("\n");
+            return [head, ...notes, tail].join("\n");
+          })
+          .join("\n\n---\n\n");
+      },
+    }),
+
+    // =====================================================================
+    // Desktop / computer use
+    // =====================================================================
+
+    sandbox_desktop: tool({
+      description:
+        "Mint a live noVNC URL for the graphical desktop in a sandbox, so the user can watch or drive " +
+        "it in a browser. The sandbox must have been created on a desktop image (rootfs 'desktop:1'). " +
+        "Enables ingress and waits for the desktop stack to finish booting.",
+      args: {
+        sandbox_id: tool.schema
+          .string()
+          .optional()
+          .describe("Sandbox to connect to. Defaults to the active one"),
+        screen: tool.schema.string().optional().describe("Screen id. Defaults to 'screen-0'"),
+      },
+      async execute(args) {
+        const id = args.sandbox_id ?? requireSandbox(getActive).sandboxId;
+        const { url, expiresAt } = await engine.desktopConnect(id, args.screen);
+        return (
+          `Desktop URL: ${url}\n\n` +
+          `Anyone holding this link can drive the desktop, and the token expires ${expiresAt}. ` +
+          `Re-running this tool mints a fresh link.`
+        );
+      },
+    }),
+
+    sandbox_computer: tool({
+      description:
+        "Send one computer-use action to the desktop in a sandbox — read the screen geometry, move or " +
+        "click the mouse, type text, press a key chord, open a URL, or list windows. Run sandbox_desktop " +
+        "first; it waits for the desktop to be ready. Coordinates are raw X11 pixels — read the bounds " +
+        "from the 'screen' op rather than assuming them.",
+      args: {
+        op: tool.schema
+          .enum(["screen", "cursor", "windows", "move", "click", "type", "key", "open"])
+          .describe("The action to perform"),
+        x: tool.schema.number().optional().describe("X coordinate, for move and click"),
+        y: tool.schema.number().optional().describe("Y coordinate, for move and click"),
+        text: tool.schema.string().optional().describe("Text to type, for the 'type' op"),
+        keys: tool.schema
+          .array(tool.schema.string())
+          .optional()
+          .describe("Key chord, e.g. ['ctrl','l']"),
+        target: tool.schema.string().optional().describe("URL or path, for the 'open' op"),
+        sandbox_id: tool.schema
+          .string()
+          .optional()
+          .describe("Sandbox to drive. Defaults to the active one"),
+        screen: tool.schema.string().optional().describe("Screen id. Defaults to 'screen-0'"),
+      },
+      async execute(args) {
+        const id = args.sandbox_id ?? requireSandbox(getActive).sandboxId;
+        let action: engine.ComputerOp;
+        switch (args.op) {
+          case "move":
+            if (args.x === undefined || args.y === undefined) throw new Error("move needs x and y");
+            action = { op: "move", x: args.x, y: args.y };
+            break;
+          case "click":
+            action = { op: "click", x: args.x, y: args.y };
+            break;
+          case "type":
+            if (args.text === undefined) throw new Error("type needs text");
+            action = { op: "type", text: args.text };
+            break;
+          case "key":
+            if (!args.keys?.length) throw new Error("key needs a non-empty keys array");
+            action = { op: "key", keys: args.keys };
+            break;
+          case "open":
+            if (!args.target) throw new Error("open needs a target");
+            action = { op: "open", target: args.target };
+            break;
+          default:
+            action = { op: args.op };
+        }
+        const res = await engine.computer(id, action, args.screen);
+        return typeof res === "string" ? res : JSON.stringify(res, null, 2);
+      },
+    }),
+
+    sandbox_screenshot: tool({
+      description:
+        "Capture the desktop in a sandbox as a PNG and return its local path. Read that path to " +
+        "actually see the screen. Take one before and after any action you are unsure about — " +
+        "nothing else confirms that a click landed where you meant.",
+      args: {
+        path: tool.schema
+          .string()
+          .optional()
+          .describe("Where to write the PNG. Defaults to a temp file"),
+        sandbox_id: tool.schema
+          .string()
+          .optional()
+          .describe("Sandbox to capture. Defaults to the active one"),
+        screen: tool.schema.string().optional().describe("Screen id. Defaults to 'screen-0'"),
+      },
+      async execute(args) {
+        const id = args.sandbox_id ?? requireSandbox(getActive).sandboxId;
+        const out = args.path ?? `${tmpdir()}/createos-${shortId(id)}-${Date.now()}.png`;
+        await engine.screenshot(id, out, args.screen);
+        return `Screenshot written to ${out} — read that path to see the screen.`;
       },
     }),
   };

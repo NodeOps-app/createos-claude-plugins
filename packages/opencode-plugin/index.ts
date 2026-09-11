@@ -121,6 +121,10 @@ export const CreateOSPlugin: Plugin = async ({ project, client, $, directory }) 
           `All tools run remotely in this sandbox.\n` +
           `\n` +
           `Quick rules:\n` +
+          `- Work with a finish line (a build, a test suite, a script) → sandbox_offload dir="${hostCwd}" command="…". ` +
+          `ONE call: it creates the box, stages the dir, runs, and destroys the box. Do not hand-roll that out of ` +
+          `sandbox_create + sandbox_exec — that drops egress restriction, the keepalive, and the guaranteed destroy.\n` +
+          `- Several variants of that at once (shards, a config matrix) → sandbox_fanout\n` +
           `- "mount/sync this dir" → sandbox_sync local_dir="${hostCwd}" remote_dir="/root/project"\n` +
           `- Port access → sandbox_preview_url (public URL) > sandbox_tunnel (localhost) > device VPN (last resort)\n` +
           `- Multi-node → sandbox_network_create + sandbox_create with network + sandbox_exec on other sandboxes`,

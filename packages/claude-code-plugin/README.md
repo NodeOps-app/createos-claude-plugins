@@ -89,14 +89,14 @@ A reusable per-repo box + one-way file sync (default; `-2` for two-way). A dev s
 **From the marketplace (recommended):**
 
 ```
-/plugin marketplace add NodeOps-app/createos-claude-plugins
+/plugin marketplace add NodeOps-app/createos-plugin
 /plugin install createos-sandbox@createos
 ```
 
 **Dev (instant, no install):**
 
 ```bash
-claude --plugin-dir /path/to/createos-claude-plugins/packages/claude-code-plugin
+claude --plugin-dir /path/to/createos-plugin/packages/claude-code-plugin
 /reload-plugins      # after editing plugin files
 ```
 
@@ -105,7 +105,7 @@ claude --plugin-dir /path/to/createos-claude-plugins/packages/claude-code-plugin
 `cos` is **not on `PATH`** by default. To use bare `cos` in your own terminal, run its installer once by absolute path:
 
 ```bash
-/path/to/createos-claude-plugins/packages/claude-code-plugin/scripts/cos install   # symlinks to ~/.local/bin/cos
+/path/to/createos-plugin/packages/claude-code-plugin/scripts/cos install   # symlinks to ~/.local/bin/cos
 ```
 
 `${CLAUDE_PLUGIN_ROOT}` only expands inside slash-command frontmatter — it is **not** set in your shell, nor in Claude's Bash tool environment. Slash commands resolve the path for you; for autonomous skill use the `SessionStart` hook publishes it. Running `cos install` once removes the question entirely.

@@ -23,10 +23,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NodeOps-app/createos-claude-plugins.git",
+    "url": "git+https://github.com/NodeOps-app/createos-plugin.git",
     "directory": "packages/dsh-createos"
   },
-  "homepage": "https://github.com/NodeOps-app/createos-claude-plugins/tree/main/packages/dsh-createos#readme",
+  "homepage": "https://github.com/NodeOps-app/createos-plugin/tree/main/packages/dsh-createos#readme",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -3,8 +3,9 @@
 OpenCode plugin that runs all tool calls inside a remote
 [CreateOS Sandbox](https://createos.sh) while the agent runs locally.
 
-CLI-only — every operation shells out to the `createos` CLI. No HTTP client,
-no API keys. Auth is handled by `createos login`.
+Every operation shells out to the `createos` CLI, except computer-use — the CLI
+has no `sandbox computer` command yet, so those calls go straight to the REST
+API. Auth is handled by `createos login`.
 
 ```
 OpenCode agent (local)  →  createos CLI  →  CreateOS API  →  Sandbox (remote VM)
@@ -50,7 +51,7 @@ cd packages/opencode-plugin && bun install
 
 ## How it works
 
-1. Plugin loads and registers 33 `sandbox_*` tools
+1. Plugin loads and registers 38 `sandbox_*` tools
 2. System prompt is injected into all agents telling them to use `sandbox_exec`
    for all shell commands instead of the built-in `bash` tool
 3. On first tool call, a sandbox is created automatically
@@ -67,7 +68,39 @@ Environment variables:
 | `CREATEOS_SHAPE`   | `s-2vcpu-2gb` | Sandbox VM size                      |
 | `CREATEOS_ROOTFS`  | `devbox:1`    | Base image for the sandbox           |
 
-## Tool inventory (33 tools)
+## Offloading vs. driving a box
+
+Two shapes of work, two tools. Getting this wrong is the most common mistake:
+
+| Work                                                         | Tool                                                      |
+| ------------------------------------------------------------ | --------------------------------------------------------- |
+| Has a finish line — a build, a test suite, a script          | `sandbox_offload` — one call, box destroyed afterwards    |
+| Several variants of that at once — shards, a config matrix   | `sandbox_fanout` — one throwaway box per command          |
+| Outlives one command — a dev server, a watcher, a session    | `sandbox_create` + `sandbox_exec`, then `sandbox_destroy` |
+
+`sandbox_offload` is not a convenience wrapper over create + exec. It carries the
+things a hand-rolled sequence silently drops: egress restricted to the domains a
+build actually needs, a keepalive so a dropped stream does not kill a long build,
+guaranteed destruction even when the command throws, and staging excludes that
+keep `.git`, `node_modules`, `target` and large media off the wire.
+
+## Tool inventory (38 tools)
+
+### Offload engine
+
+| Tool                 | Description                                                                  |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `sandbox_offload`    | Stage a directory, run a command, pull artifacts, destroy the box            |
+| `sandbox_fanout`     | Run each of several commands in its own throwaway box, in parallel           |
+
+### Desktop / computer use
+
+| Tool                 | Description                                                                  |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `sandbox_desktop`    | Mint a live noVNC URL for a `desktop:1` box so the user can watch or drive it |
+| `sandbox_computer`   | One computer-use action: screen, cursor, windows, move, click, type, key, open |
+| `sandbox_screenshot` | Capture the desktop as a PNG and return its local path                        |
+
 
 ### Execute & Files
 
@@ -163,10 +196,19 @@ packages/opencode-plugin/
 ├── README.md          # This file
 ├── tsconfig.json
 └── src/
-    ├── cli.ts         # All createos CLI wrappers (execSync-based)
-    ├── tools.ts       # 33 tool definitions using tool() + tool.schema.*
-    └── util.ts        # shellQuote, shortId, joinPath
+    ├── cli.ts             # All createos CLI wrappers (execSync-based)
+    ├── sandbox-engine.ts  # copy — canonical lives in packages/shared/
+    ├── tools.ts           # 38 tool definitions using tool() + tool.schema.*
+    └── util.ts            # shellQuote, shortId, joinPath
 ```
+
+## Shared engine
+
+`src/sandbox-engine.ts` is a copy. The canonical file is
+`packages/shared/sandbox-engine.ts`; `scripts/sync-shared.sh` writes the copies
+and CI fails on drift, so edit the canonical one. It is a TypeScript port of the
+`cos` bash driver that the Claude Code and Codex plugins run — the two are meant
+to behave identically, so a change to one belongs in the other.
 
 ## License
 

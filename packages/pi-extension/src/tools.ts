@@ -6,6 +6,7 @@
  * Pi extension best practices (snake_case, named promptGuidelines).
  */
 
+import { tmpdir } from "node:os";
 import { isAbsolute } from "node:path";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,15 +21,53 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as cli from "./cli.ts";
+import * as engine from "./sandbox-engine.ts";
 import { type FindParams, runRemoteFind } from "./find-tool.ts";
 import { fanoutScenarios, type FanoutScenario } from "./fanout.ts";
 import { validateLocalSyncSource } from "./startup-sync.ts";
 import { type GrepParams, runRemoteGrep } from "./grep-tool.ts";
 import { createBashOps, createEditOps, createLsOps, createReadOps, createWriteOps } from "./ops.ts";
+import { shortId } from "./util.ts";
 
 export interface ToolSandbox {
   sandboxId: string;
   cwd: string;
+}
+
+interface ComputerActionParams {
+  op: string;
+  x?: number;
+  y?: number;
+  text?: string;
+  keys?: string[];
+  target?: string;
+}
+
+export function computerAction(params: ComputerActionParams): engine.ComputerOp {
+  switch (params.op) {
+    case "screen":
+    case "cursor":
+    case "windows":
+      return { op: params.op };
+    case "move":
+      if (params.x === undefined || params.y === undefined) throw new Error("move needs x and y");
+      return { op: "move", x: params.x, y: params.y };
+    case "click":
+      if ((params.x === undefined) !== (params.y === undefined))
+        throw new Error("click needs both x and y, or neither");
+      return { op: "click", x: params.x, y: params.y };
+    case "type":
+      if (params.text === undefined) throw new Error("type needs text");
+      return { op: "type", text: params.text };
+    case "key":
+      if (!params.keys?.length) throw new Error("key needs a non-empty keys array");
+      return { op: "key", keys: params.keys };
+    case "open":
+      if (!params.target) throw new Error("open needs a target");
+      return { op: "open", target: params.target };
+    default:
+      throw new Error(`unknown desktop operation: ${params.op}`);
+  }
 }
 
 export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | null): void {
@@ -206,6 +245,199 @@ export function registerTools(pi: ExtensionAPI, getActive: () => ToolSandbox | n
         return `✗ ${result.name} · ${result.error ?? "failed"}`;
       });
       return { content: [{ type: "text", text: lines.join("\n") }], details: { results } };
+    },
+  });
+
+  // --- One-shot offload ---
+
+  pi.registerTool({
+    name: "sandbox_offload",
+    label: "Offload To Throwaway Sandbox",
+    description:
+      "Run a command in a throwaway sandbox and destroy it: stage a local directory to /work, run the command " +
+      "with a keepalive that survives a dropped stream, optionally pull artifacts back, then destroy the box. " +
+      "The upload excludes .git, node_modules, target, virtualenvs and large media.",
+    promptSnippet: "Run a build or test suite off this machine in a disposable sandbox",
+    promptGuidelines: [
+      "Prefer sandbox_offload over sandbox_create + sandbox_exec for anything that finishes on its own. Hand-rolling that sequence drops egress restriction, the keepalive, and the guaranteed destroy, so a 'successful' run can leave an unrestricted box billing.",
+      "Set sandbox_offload's egress_presets to what the build actually fetches (python-uv, rust-cargo, npm, github). With nothing set the box can reach any host, which is the isolation this tool exists for.",
+      "Give sandbox_offload shape s-2vcpu-2gb or swap_gb for compiled builds (cargo, torch, pip install); the default 1 GB box dies with OOM partway through and reads like a code failure.",
+    ],
+    parameters: Type.Object({
+      command: Type.String({
+        description: "Shell command to run, with /work as the working directory",
+      }),
+      dir: Type.Optional(
+        Type.String({
+          description: "Absolute local directory to stage (default: current directory)",
+        }),
+      ),
+      shape: Type.Optional(Type.String({ description: "Sandbox size (default: s-1vcpu-1gb)" })),
+      rootfs: Type.Optional(Type.String({ description: "Base image (default: devbox:1)" })),
+      egress_presets: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Allow only what these ecosystems need: python-uv | rust-cargo | npm | github",
+        }),
+      ),
+      egress: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Extra allowed domains; composes with egress_presets",
+        }),
+      ),
+      egress_all: Type.Optional(
+        Type.Boolean({ description: "Unrestricted egress — trusted code only" }),
+      ),
+      exclude: Type.Optional(Type.Array(Type.String(), { description: "Extra upload excludes" })),
+      out: Type.Optional(
+        Type.String({
+          description: "Path under /work to pull back into dir when the command finishes",
+        }),
+      ),
+      swap_gb: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 64,
+          description: "Swap to add before running — OOM headroom",
+        }),
+      ),
+      keep_on_fail: Type.Optional(
+        Type.Boolean({
+          description: "Keep the box when the command exits non-zero, for debugging",
+        }),
+      ),
+    }),
+    async execute(_id, params) {
+      const dir = params.dir ?? localCwd;
+      if (!isAbsolute(dir)) throw new Error("dir must be an absolute path");
+      const result = await engine.offload({
+        dir,
+        command: params.command,
+        shape: params.shape,
+        rootfs: params.rootfs,
+        egress: params.egress,
+        egressPresets: params.egress_presets,
+        egressAll: params.egress_all,
+        exclude: params.exclude,
+        out: params.out,
+        swapGB: params.swap_gb,
+        keepOnFail: params.keep_on_fail,
+      });
+      const header = `sandbox ${result.sandboxId} — exit code ${result.exitCode ?? "unknown"}${
+        result.kept ? " (box KEPT)" : " (box destroyed)"
+      }`;
+      const warnings = result.warnings.map((warning) => `warning: ${warning}`);
+      const text = [header, ...warnings, "", result.log || "(no output)"].join("\n");
+      return { content: [{ type: "text", text }], details: { result } };
+    },
+  });
+
+  // --- Desktop / computer use ---
+
+  function desktopTarget(params: { sandbox_id?: string; screen?: string }): {
+    sandboxId: string;
+    screen?: string;
+  } {
+    const sandboxId = params.sandbox_id ?? requireSandbox()?.sandboxId;
+    if (!sandboxId) throw new Error("No active sandbox — run sandbox_desktop first");
+    return { sandboxId, screen: params.screen };
+  }
+
+  const desktopParams = {
+    sandbox_id: Type.Optional(
+      Type.String({ description: "Sandbox to drive (default: the active one)" }),
+    ),
+    screen: Type.Optional(Type.String({ description: "Screen id (default: screen-0)" })),
+  };
+
+  pi.registerTool({
+    name: "sandbox_desktop",
+    label: "Open Sandbox Desktop",
+    description:
+      "Enable ingress on a sandbox, wait for its desktop stack to finish booting, and mint a live noVNC URL " +
+      "for one screen. The sandbox must already have been created on a desktop image (rootfs desktop:1).",
+    promptSnippet: "Get a browser URL for a sandbox's graphical desktop",
+    promptGuidelines: [
+      "Run sandbox_desktop before sandbox_computer or sandbox_screenshot — it waits for the desktop stack to come up.",
+      "When handing over the URL from sandbox_desktop, tell the user that anyone holding the link can drive the desktop, and when the token expires.",
+    ],
+    parameters: Type.Object(desktopParams),
+    async execute(_id, params) {
+      const { sandboxId, screen } = desktopTarget(params);
+      const { url, expiresAt } = await engine.desktopConnect(sandboxId, screen);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Desktop URL: ${url}\n\nAnyone holding this link can drive the desktop, and the token ` +
+              `expires ${expiresAt}. Re-running this tool mints a fresh link.`,
+          },
+        ],
+        details: { url, expiresAt },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "sandbox_computer",
+    label: "Control Sandbox Desktop",
+    description:
+      "Read a screen, cursor, or windows; move or click the mouse; type text; press keys; or open a URL " +
+      "in a sandbox desktop. Run sandbox_desktop first. Coordinates are raw X11 pixels.",
+    promptSnippet: "Control a sandbox desktop",
+    parameters: Type.Object({
+      ...desktopParams,
+      op: Type.String({
+        description: "screen | cursor | windows | move | click | type | key | open",
+      }),
+      x: Type.Optional(Type.Integer({ description: "X coordinate for move or click" })),
+      y: Type.Optional(Type.Integer({ description: "Y coordinate for move or click" })),
+      text: Type.Optional(Type.String({ description: "Text for type" })),
+      keys: Type.Optional(
+        Type.Array(Type.String(), { description: 'Key chord for key, e.g. ["ctrl", "l"]' }),
+      ),
+      target: Type.Optional(Type.String({ description: "URL or path for open" })),
+    }),
+    async execute(_id, params) {
+      const { sandboxId, screen } = desktopTarget(params);
+      const result = await engine.computer(sandboxId, computerAction(params), screen);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: { result },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "sandbox_screenshot",
+    label: "Screenshot Sandbox Desktop",
+    description:
+      "Capture one screen of a sandbox desktop as a PNG on the local filesystem and return its path.",
+    promptSnippet: "Capture the screen of a sandbox desktop",
+    promptGuidelines: [
+      "Call sandbox_screenshot before and after any desktop action you are unsure about, then read its returned path to see the image.",
+    ],
+    parameters: Type.Object({
+      ...desktopParams,
+      path: Type.Optional(
+        Type.String({ description: "Absolute path to write the PNG to (default: a temp file)" }),
+      ),
+    }),
+    async execute(_id, params) {
+      const { sandboxId, screen } = desktopTarget(params);
+      if (params.path && !isAbsolute(params.path)) throw new Error("path must be absolute");
+      const out = params.path ?? `${tmpdir()}/createos-${shortId(sandboxId)}-${Date.now()}.png`;
+      await engine.screenshot(sandboxId, out, screen);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Screenshot written to ${out} — read that path to see the screen.`,
+          },
+        ],
+        details: { path: out },
+      };
     },
   });
 
@@ -1139,5 +1371,5 @@ function fmtBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+  return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`;
 }

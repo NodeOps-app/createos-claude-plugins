@@ -1,137 +1,214 @@
 ---
 name: using-createos-sandbox
-description: Use when the user wants to run code in a remote sandbox, offload heavy builds or tests, run untrusted code safely, create disposable Linux boxes, set up multi-node clusters, or use createos sandbox commands. Triggers on keywords like createos, sandbox, offload, remote, isolated, disposable box.
+description: Use when you need to run code OFF the user's machine — heavy/long builds or test suites, untrusted or unknown code, a parallel test/config matrix across many boxes, an instant clean Linux to try a tool, a live dev-server/watcher you edit against, reaching a box-side service from localhost (port tunnel) or sharing it on the public web (HTTPS preview URL), a multi-machine cluster on one private network, a WireGuard VPN into that network, mounting an S3 bucket of data, or work that needs a real screen — a graphical Linux desktop with a browser that you drive by screenshot/click/type and the user can watch over noVNC. Offloads to ephemeral CreateOS Sandboxes via the `cos` helper (stage → exec → pull → auto-destroy), plus fanout, a scratch shell, and an opt-in reusable box with sync, tunnel, expose, desktop/computer-use, cluster, disk, vpn, pause/resume, custom images, and snapshot/fork.
 ---
 
 # Using CreateOS Sandbox as remote compute
 
-A CreateOS Sandbox is an isolated Linux VM that goes from create to running your first command in roughly 200 ms. Use it as throwaway compute instead of running risky or heavy work on the user's laptop.
+A CreateOS Sandbox is an isolated Linux box that goes from create to running your first command in roughly 200 ms. Use it as throwaway compute instead of running risky or heavy work on the user's laptop.
 
-## The createos CLI
+## Running the driver
 
-All sandbox operations use the `createos` CLI. Check it's available:
+Everything goes through `cos`. **A session-start hook prints its absolute path into your context at the start of the session — use that literal path.**
 
-```bash
-createos version
-```
+In Claude Code specifically, do not write `${CLAUDE_PLUGIN_ROOT}` into a Bash command. That variable is set when slash commands are loaded but is **unset in the Bash tool's environment**, so the path collapses to `/scripts/cos` and dies with exit 127.
 
-If not installed, install it:
+If you cannot locate or run `cos`, **stop and say so.** Do not fall back to composing the job out of raw `createos sandbox create/push/exec` calls. That path looks equivalent and is not: it silently drops egress restriction, the keepalive that survives a dropped stream on a long build, guaranteed auto-destroy, and the auth preflight — so a "successful" run can leave an unrestricted box billing with no isolation ever applied. A missing driver is a hard stop, not a reason to improvise.
 
-```bash
-curl -sfL https://raw.githubusercontent.com/NodeOps-app/createos-cli/main/install.sh | sh
-```
+`cos install` symlinks it into `~/.local/bin` if the user wants it on PATH permanently. It wraps the authed `createos` CLI and needs `jq`, `tar`, `perl`, and `curl`; if the `createos` CLI is missing it auto-installs it from the official script (opt out with `COS_NO_AUTOINSTALL=1`).
 
-Check auth:
+## Setup — check this once per session, before the first offload
 
 ```bash
-createos sandbox shapes
+cos auth
 ```
 
-If that fails, the user needs to run `createos login` in their own terminal (browser OAuth). **Never ask the user to paste an API key into the conversation.**
+Healthy output names one of three credential sources: `CREATEOS_API_KEY`, a browser OAuth session, or an API token file. Anything else means not signed in.
 
-## When to use it
+**You cannot fix that yourself.** `createos login` is an interactive TTY prompt that opens a browser, and an agent shell has no TTY. Do not try to run it and do not work around it with `--token`. Relay the two options to the user:
 
-| Situation                 | Why                                            |
-| ------------------------- | ---------------------------------------------- |
-| Untrusted/unknown code    | Isolation — blast radius is one disposable box |
-| Heavy build or test suite | Keeps the laptop free                          |
-| Quick scratch Linux       | Instant clean box, destroyed when done         |
-| Clean-room repro          | Fresh rootfs every time                        |
-| Multi-machine setup       | Private network clusters                       |
+1. **Browser (recommended)** — they run `createos login` in their own terminal and pick "Sign in with browser".
+2. **API key** — they `export CREATEOS_API_KEY=<key>` (from <https://createos.sh>) in the shell that launched the agent.
 
-## Core commands
+**Never ask the user to paste an API key into the conversation** — it lands in the transcript. Export or browser, nothing else.
 
-### Create a sandbox
+Every `cos` command except `install` and `auth` runs this check first, so an unauthenticated box never gets tarballed and uploaded before failing.
+
+## When to reach for it
+
+| Situation                                                                                      | Why offload                                                                        |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **Untrusted / unknown code** — a snippet, a fresh npm/pip package, scraped code, a PoC exploit | Isolation. The blast radius is one disposable box, not the laptop.                 |
+| **Heavy build or test suite** — big `make`, full test run, compile, benchmark                  | Keeps the laptop free; runs on a box sized for it.                                 |
+| **Parallel/matrix work** — same job across N configs, test shards, batch                       | `fanout` — each command in its own throwaway box, concurrently, results collected. |
+| **Quick scratch Linux** — try a CLI/tool/snippet on a clean box                                | `shell` — instant keyless box, destroyed on exit (interactive; the user runs it).  |
+| **Clean-room repro** — "works on my machine" bugs, dependency conflicts                        | Fresh rootfs every time, no host state.                                            |
+| **Live dev loop** — dev server / test watcher / REPL that reacts to edits                      | Project box + `sync`; you edit locally, the box reacts.                        |
+| **Reach a box-side service** — dev server, DB, API                                             | `tunnel` (private, to `127.0.0.1`) or `expose` (public HTTPS link to share).       |
+| **Needs a screen** — a real browser, a GUI app, or a desktop to click through                  | `desktop` — graphical box + noVNC URL; `computer` to drive it (screenshot/click/type). |
+| **Multi-machine** — distributed system, DB replication, p2p mesh, load test                    | `cluster up N` — boxes share one private net, reach each other by name.            |
+| **Same setup, many variants** — try N branches from one prepared box                           | `fork` the project box into independent clones.                                    |
+| **Repeated identical setup** — every offload starts with the same install prelude              | `template` — bake the toolchain into an image once.                                |
+| **Done for now, back tomorrow** — warm box you don't want to rebuild                           | `pause` — snapshot at zero compute cost, `resume` restores it exactly.             |
+| **Big data / weights / shared cache**                                                          | `disk` — BYO S3 bucket mounted into the box, survives box death.                   |
+
+Do NOT offload trivial commands, anything needing the user's local secrets/SSH/cloud creds, or work that must touch real local filesystem state.
+
+## Picking the verb — decide this before typing anything
+
+Almost every task is one of two shapes, and picking the wrong one wastes a lot of motion:
+
+- **"Run this and tell me the result"** — a test suite, a build, a script, anything with an end. → **`cos offload <dir> <cmd>`.** One command. It creates the box, ships the directory, runs, and destroys the box. Nothing to clean up.
+- **"Keep a box around while I work"** — a dev server you'll hit repeatedly, a watcher reacting to edits, a session spanning many commands. → **`cos up`**, then `run`/`sync`, then `pause` or `down`.
+
+If you find yourself doing any of the following, you have picked the wrong shape and should stop and use `offload` instead:
+
+- running `cos up` for a task that has a clear finish line
+- tarring, base64-encoding, or `push`-ing files into the box by hand — **`offload` stages the directory for you**, with sensible excludes, in the same command
+- reaching for `cos status` to decide what to do first — for one-shot work there is nothing to check, just offload
+
+`cos run` takes the command as one plain string. There is no `--` separator: `cos run 'npm ci && npm test'`.
+
+## Pattern A — one-shot offload (the default, and the safe one)
+
+Stage a directory, run, optionally pull artifacts back, **always auto-destroys**. Flags come **before** the `<dir> <cmd>` positionals.
 
 ```bash
-createos sandbox create --shape s-2vcpu-2gb --ingress
+# run a test suite off-machine (the preset opens the registries it needs)
+cos offload -p python-uv . 'uv sync --frozen --group dev && uv run pytest -q'
+
+# Python + Rust, compose presets, exclude build dirs, pull artifacts back
+cos offload -p python-uv -p rust-cargo -x target -o dist . 'uv sync --frozen && uv run pytest -q'
+
+# trusted heavy build, explicitly unrestricted egress
+cos offload -E -s s-2vcpu-2gb . 'cargo build --release'
+
+# untrusted script, outbound locked to exactly what it needs
+cos offload -e pypi.org -e files.pythonhosted.org ./suspect 'python3 main.py'
 ```
 
-### Run a command inside a sandbox
+Two things about this that are easy to get wrong:
+
+- **Egress is unrestricted by default.** A fresh box can reach anything; `cos` prints a one-line notice. Restricting is opt-in with `-p <preset>` or `-e <domain>`. So "run this untrusted thing in a sandbox" is only half done until you pass one of those.
+- **Uploads are one-way.** Box-side changes never touch the local tree unless you ask with `-o <path>`. `.git`, `node_modules`, `target`, `.venv` and friends are excluded from the upload by default — dependencies are meant to be built _inside_ the box.
+
+Long, quiet builds survive a dropped connection: the command runs detached with a heartbeat watcher that re-attaches if the stream dies. The real exit code is preserved.
+
+For the full flag table, the egress presets, the enforcement caveats, fanout, and the OOM/disk/bandwidth traps on heavy builds → **`references/offload-and-egress.md`**.
+
+### Fanout — same input, many boxes, in parallel
 
 ```bash
-createos sandbox exec <sandbox-id> -- sh -c 'hostname && uname -a'
+cos fanout -j 2 -p python-uv . 'pytest -q tests/unit' 'pytest -q tests/integration' 'ruff check'
 ```
 
-### List sandboxes
+Each job gets its own box with no shared network — that is what distinguishes it from `cluster`. `-j` defaults to 2 to match the concurrency external keys have been observed to allow; going higher just queues the extra jobs rather than failing.
+
+## Pattern B — reusable project box (opt-in)
+
+For repeated runs against a warm box, or a dev server you edit against. One box per git root, tracked in a statefile.
 
 ```bash
-createos sandbox list
+cos up -s s-2vcpu-2gb    # create/reuse this project's box
+cos run 'npm ci'         # warm it — deps persist across runs
+cos sync ~/app /work     # one-way by default (laptop → box), background
+cos run 'npm run dev &'  # start a watcher; it sees synced edits
+cos status               # box + sync + tunnels + forks
+cos pause                # park it at zero compute cost
+cos resume               # bring it back exactly as it was
+cos down                 # stop sync + destroy the box
 ```
 
-### Get sandbox info
+**`up` is for a box you intend to reuse and then tear down.** A bare "run this in a sandbox" is _not_ Pattern B — use `cos offload` (one-shot, auto-destroys) or `cos shell`. Reaching for `up` to satisfy "create a sandbox" makes the box outlive the task, and a later `cos down` destroys it along with anything else sharing that statefile.
+
+**Ending a session: prefer `pause` over `down`** when the box has a warm toolchain the user will want again. `down` destroys and the next session reinstalls everything; `pause` snapshots disk _and_ memory, stops compute billing, and brings everything back on `resume` — measured end-to-end at around 6–8 s each way through the CLI. Use `down` when the work is genuinely finished.
+
+If a box under this project's name is running but the statefile is gone (another checkout, another agent, created by hand), `up` **refuses** rather than adopting it — adopting silently would let a later `cos down` destroy a box this project never created. `cos up -a` adopts explicitly, and an adopted box is never destroyed by `cos down`.
+
+### Sync modes
+
+`cos sync` defaults to **one-way (laptop → box)** — the safe direction for a dev loop.
+
+| Flag        | Mode      | Behavior                                                                           |
+| ----------- | --------- | ---------------------------------------------------------------------------------- |
+| _(default)_ | `one-way` | laptop wins; box changes NOT pulled back. **No bleed-back.**                       |
+| `-2`        | `two-way` | bidirectional; box-side writes (build output, deps) **flow back** to the local dir |
+| `-M`        | `mirror`  | one-way **and deletes** box-side files absent locally                              |
+| `-x <glob>` | —         | exclude paths (repeatable)                                                         |
+
+`.git` and the big regenerable dirs are excluded by default — build deps inside the box with `cos run 'npm ci'` rather than syncing them up. Only reach for `-2` when a box-side process genuinely produces files you need back locally, and never on the user's repo root without saying so first; prefer `offload -o` for pulling artifacts. The local dir must resolve under `$HOME` or `/tmp`. The first sync downloads its sync engine, so allow a minute before edits propagate.
+
+## Pattern C — networking
 
 ```bash
-createos sandbox get <sandbox-id>
+cos run 'npm run dev &' && cos tunnel 3000   # private → http://127.0.0.1:3000
+cos expose 8080                              # public HTTPS URL to share
+cos unexpose                                 # revoke
+cos cluster up 3                             # 3 boxes on one private net, name-addressable
+cos cluster run -a 'uname -a'                # fan a command across every member
+cos vpn register my-laptop && cos vpn up     # WireGuard L3 into the private network
 ```
 
-### Destroy a sandbox
+- **`tunnel` is private, `expose` is public.** Prefer `tunnel` for dev loops. Use `expose` to share a preview with the team or to give a webhook a target.
+- **An exposed service must bind `0.0.0.0:<port>`, not loopback** — ingress arrives on the box's interface. A loopback-bound server passes every in-box check and still returns nothing through the URL.
+- **The expose URL is the credential.** No token, no auth layer — anyone with the link reaches the service. `cos unexpose` when the demo is done.
+- **`cos vpn up` and `cos shell` block and need a real terminal** — hand them to the user (`!cos vpn up`) rather than launching them as agent commands.
+
+For the DNS names cluster members resolve each other by, and the rest of the expose/tunnel/VPN detail → **`references/networking.md`**.
+
+## Pattern D — a desktop, and driving it
+
+Some work needs a screen: a real (not headless) browser, a GUI app, or an install flow that only exists as a wizard. `cos desktop` puts the project box on the `desktop:1` rootfs — XFCE, Google Chrome, `xdotool`/`wmctrl`/`scrot`/`xclip` — and hands back a live noVNC URL.
 
 ```bash
-createos sandbox rm <sandbox-id> --yes
+cos desktop                          # desktop:1 box + ingress + noVNC URL (waits for the desktop to boot)
+cos computer screenshot              # PNG → prints a path; open it with the Read tool
+cos computer screen                  # {"width":1280,"height":800} — the coordinate space
+cos computer open https://example.com
+cos computer click 640 400
+cos computer type 'hello'
+cos computer key ctrl l              # a chord
+cos computer help                    # every op, plus `raw` for the rest of the API
 ```
 
-### Pause / Resume
+The two halves are independent and useful together: the URL lets the **user** watch and take over in a browser, while `cos computer` lets **you** act. `desktop:1` also ships the Claude Code, Codex, Pi, OpenCode and Cursor CLIs, so "run an agent on a box and let the user watch the screen" needs no extra setup.
+
+Things that will bite you if you skip them:
+
+- **Take a screenshot before you click, and after.** You are driving blind otherwise — nothing in this API confirms that a click landed on what you meant.
+- **Coordinates are raw X11 pixels** of that screen, with no scaling or DPI translation anywhere. Read the bounds from `cos computer screen` rather than assuming 1280x800.
+- **The desktop boots after the box reports `running`.** `cos desktop` polls for readiness; a bare `cos up -r desktop:1` does not, and every computer call will fail until the stack is up.
+- **A `409` is ambiguous by design.** fc returns `desktop_unavailable` both while the desktop is still coming up and when an action fails on a perfectly healthy desktop, so never read it as "the box is broken".
+- **The noVNC link is a bearer URL** — anyone holding it can drive the desktop, and the token expires. Say so when handing it over, and don't paste it anywhere it will outlive the box.
+- This is the one place `cos` calls the CreateOS REST API directly, because the `createos` CLI has no computer or desktop command yet. Everything else still goes through the CLI.
+
+## Scratch box and data disks
 
 ```bash
-createos sandbox pause <sandbox-id>
-createos sandbox resume <sandbox-id>
+cos shell                        # instant clean Linux, destroyed on exit — HAND THIS TO THE USER
+cos disk create data --bucket my-bucket --endpoint https://s3.amazonaws.com \
+  --access-key … --secret-key … [--region us-east-1] [--path-style]
+cos disk attach data /mnt/data   # needs the project box; the bucket stays in the user's account
+cos disk detach data /mnt/data   # unmount; bucket untouched
 ```
 
-## File transfer
+Disk data lives in the user's own S3 account and region. `--path-style` is needed for MinIO and R2. Prefer scoped, least-privilege keys, and prefer the CLI's interactive prompts over passing secrets as arguments — command lines are visible to other local users and land in shell history. Detaching only unmounts; it never deletes bucket data. Note that **a fork does not carry disk mounts** — re-attach on the clone.
 
-### Push a file to sandbox
+## Lifecycle and cost
 
-```bash
-echo 'file content' | base64 | createos sandbox exec <id> -- sh -c "base64 -d > /path/to/file"
-```
+- Ephemeral boxes self-destroy. The project box carries a 30-minute idle auto-pause as a backstop, so a forgotten box parks itself instead of billing overnight. Raise it with `createos sandbox edit <id> --auto-pause 4h` when a box is serving an exposed URL people will hit intermittently — otherwise the demo will look dead between visitors.
+- Finish a live session with `cos pause` (keeping the warm state) or `cos down` (done for good). Don't leave a running box behind either way.
+- **Concurrency is limited** — external keys have been observed to allow 2 boxes running at once, with a daily creation cap. This is observed behaviour rather than published policy, so budget `cluster` and `fanout` against it and expect excess jobs to queue rather than fail.
+- If a shape is rejected, the error names the allowed list — pick from it, or run `createos sandbox shapes`.
+- Pre-existing boxes the user already runs are **not** yours. `cos` only ever destroys boxes it created itself; a box adopted with `cos up -a` survives `cos down`.
+- CreateOS Sandbox is in alpha with no SLA. When a limit or a number matters to a decision, check it live rather than quoting it from here.
 
-### Pull a file from sandbox
+## References
 
-```bash
-createos sandbox pull <id> /path/to/file -
-```
+Load these when the task actually needs the depth — the summaries above are enough for most work.
 
-## Networking
-
-### Get a public URL for a port
-
-The sandbox's ingress URL template is in `createos sandbox get <id>`. Replace `<port>` with the actual port number.
-
-### Port tunnel to localhost
-
-```bash
-createos sandbox tunnel --remote <port> --local <port> <sandbox-id>
-```
-
-### Private networks (multi-node)
-
-```bash
-createos sandbox network create <name>
-createos sandbox network attach <network-name> <sandbox-id>
-createos sandbox network show <network-name>
-```
-
-## Persistent storage (S3 disks)
-
-```bash
-createos sandbox disk create <name> --bucket <bucket> --endpoint <url> --access-key <key> --secret-key <key>
-createos sandbox disk attach <sandbox-id> <disk-name> /mnt/data
-```
-
-## Device VPN
-
-```bash
-createos sandbox devices register
-# User runs in separate terminal (requires sudo):
-createos sb vpn up
-```
-
-## Workflow pattern
-
-1. Create sandbox: `createos sandbox create --shape s-2vcpu-2gb --ingress`
-2. Note the sandbox ID from the output
-3. Run commands: `createos sandbox exec <id> -- sh -c '<command>'`
-4. When done: `createos sandbox rm <id> --yes`
-
-IMPORTANT: Always use `createos sandbox exec <id> -- sh -c '<command>'` to run commands inside the sandbox. Do NOT use the built-in bash/shell tool for sandbox work — that runs on the user's local machine.
+| File                                 | Read it for                                                                                                                                                                |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `references/offload-and-egress.md`   | offload flag table, egress presets and how enforcement really behaves, fanout, upload excludes, heavy-build OOM/disk/bandwidth traps                                       |
+| `references/networking.md`           | choosing between tunnel/expose/cluster/vpn, cluster DNS names, expose gotchas, WireGuard setup                                                                             |
+| `references/lifecycle-and-images.md` | pause/resume, auto-pause tuning, fork caveats, built-in rootfs vs custom templates, env vars, remote editor, self-terminating jobs, single-file transfer, measured timings |

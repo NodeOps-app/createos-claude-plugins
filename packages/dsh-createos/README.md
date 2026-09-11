@@ -24,7 +24,7 @@ export CREATEOS_SANDBOX_ROOTFS='...'
 Install the bundle from this monorepo checkout into the Web profile:
 
 ```sh
-dsh plugin --profile web add /path/to/createos-claude-plugins/packages/dsh-createos
+dsh plugin --profile web add /path/to/createos-plugin/packages/dsh-createos
 ```
 
 Configure a DSH model provider separately, set the CreateOS variables above, and start Web from the workspace path the remote tools should use:
@@ -45,7 +45,7 @@ Stop Web with `Ctrl+C`. Plugin teardown destroys the shared sandbox.
 Install directly from this monorepo while developing:
 
 ```sh
-dsh plugin --profile headless add /path/to/createos-claude-plugins/packages/dsh-createos
+dsh plugin --profile headless add /path/to/createos-plugin/packages/dsh-createos
 ```
 
 After publication, install the package by registry name:
